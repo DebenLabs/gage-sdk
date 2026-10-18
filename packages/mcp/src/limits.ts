@@ -6,7 +6,8 @@
  * action in an asset other than USDG (the founder's choice). A roll counts only what it borrows beyond the loan it
  * repays (the founder, 18 October 2026): gage-sdk rolls a loan into one of the same size, so a roll counts nothing, as
  * repaying does; leaving a loan to roll by itself, or ending that, moves nothing, nor does a rating of gage (D302). On
- * mainnet each limit has a default, 100 USDG an action and 250 in 24 hours; on the testnet there is none unless one is set.
+ * mainnet each limit has a default, 100 USDG an action and 250 in 24 hours, which the owner may lift with `off` (D311:
+ * whether an agent signs without limits is its owner's choice); on the testnet there is none unless one is set.
  *
  * The 24 hours count across restarts and across every gage-mcp on this computer acting for the wallet: each action that
  * counts holds its amount as a file in the wallet's folder, named after its time, kind and amount. The file is made
@@ -44,17 +45,21 @@ const NOT_LIMITED = ["reclaim", "cash_out", "roll (a loan of the same size)", "a
 /** What the limits leave free (`NOT_LIMITED`), in words, for the guide, `init` and `gage_limits`. */
 export const NOT_LIMITED_WORDS = "Repaying, cashing out, rolling a loan over at the same size, leaving a loan to roll by itself or ending that, withdrawing, cancelling, collecting and rating gage are not limited, nor are actions in an asset other than USDG.";
 
-/** A setting's amount of USDG, whole or with up to six decimals, as raw USDG; refused in fixed words naming it. */
-function amountOf(name: string, value: string): bigint {
+/**
+ * A setting's amount of USDG, whole or with up to six decimals, as raw USDG, or null for `off` (no limit, D311); anything
+ * else is refused in fixed words naming it.
+ */
+function amountOf(name: string, value: string): bigint | null {
   const written = value.trim();
-  if (!/^\d{1,12}(\.\d{1,6})?$/.test(written)) throw new ApiError("INVALID_LIMIT", `${name} must be an amount of USDG, such as 100 or 0.5`, 400);
+  if (written.toLowerCase() === "off") return null;
+  if (!/^\d{1,12}(\.\d{1,6})?$/.test(written)) throw new ApiError("INVALID_LIMIT", `${name} must be an amount of USDG, such as 100 or 0.5, or off`, 400);
   const [whole = "0", decimals = ""] = written.split(".");
   return BigInt(whole) * USDG_UNIT + BigInt(decimals.padEnd(6, "0"));
 }
 
 /**
- * The limits a server signs under on `chainId`: each setting given, else mainnet's default for it. On the testnet a
- * setting not given is no limit, and with none given there are no limits at all (null).
+ * The limits a server signs under on `chainId`: each setting given (`off` for none), else mainnet's default for it. On
+ * the testnet a setting not given is no limit, and with none given there are no limits at all (null).
  */
 export function limitsFrom(env: NodeJS.ProcessEnv, chainId: number): Limits | null {
   const given = (name: string) => (env[name] ?? "").trim() !== "";

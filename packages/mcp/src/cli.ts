@@ -6,9 +6,9 @@
  * - `gage-mcp` serves the tools. Without a key it reads gage and prepares unsigned transactions. With one it also
  *   signs and sends gage's own planned transactions, and the key never leaves this process. The key comes from
  *   GAGE_PRIVATE_KEY_FILE, GAGE_PRIVATE_KEY, or the wallet `init` made.
- * GAGE_NETWORK=mainnet serves Robinhood Chain (4663, D260). There a key signs only under spend limits (D225, D297): the
- * owner's GAGE_MAX_BORROW_USDG, GAGE_MAX_BORROW_DAY_USDG, GAGE_MAX_DEPOSIT_USDG and GAGE_MAX_DEPOSIT_DAY_USDG, else 100
- * USDG an action and 250 in 24 hours (limits.ts); on the testnet only those set. GAGE_RPC_URL, GAGE_INDEXER_URL, GAGE_RATES_URL,
+ * It serves Robinhood Chain (4663, D260) unless GAGE_NETWORK=testnet (D311). There a key signs under spend limits (D297):
+ * the owner's GAGE_MAX_BORROW_USDG, GAGE_MAX_BORROW_DAY_USDG, GAGE_MAX_DEPOSIT_USDG and GAGE_MAX_DEPOSIT_DAY_USDG (`off`
+ * lifts one, D311), else 100 USDG an action and 250 in 24 hours (limits.ts); on the testnet only those set. GAGE_RPC_URL, GAGE_INDEXER_URL, GAGE_RATES_URL,
  * GAGE_VALUATION_URL and GAGE_FAUCET_URL point it elsewhere than the network's own services. In server mode stdout
  * carries MCP messages only; logs go to stderr.
  */

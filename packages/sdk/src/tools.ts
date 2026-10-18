@@ -5,9 +5,8 @@
  */
 import type { z } from "zod";
 import type { Gage } from "./client.js";
-import { ApiError } from "./errors.js";
 import { short } from "./format.js";
-import { MAINNET_DEFAULTS, signingToolsOpen } from "./networks.js";
+import { MAINNET_DEFAULTS } from "./networks.js";
 import { actionShapes, borrowQuoteInput, emptyInput, leverageQuoteInput, loanInput, parseInput, signedShapes, walletInput, type ActionInput, type ActionName } from "./schemas.js";
 import type { SpendLimit } from "./run.js";
 import type { Signer } from "./signer.js";
@@ -25,8 +24,8 @@ export interface GageTool {
 
 export interface ToolOptions {
   /**
-   * Adds the signer's tools: `gage_wallet` and one per action (`gage_borrow`, …), each acting for the signer's wallet only.
-   * On mainnet only with `limit` (D225, D297): without spend limits there the catalogue prepares, and the owner signs.
+   * Adds the signer's tools: `gage_wallet` and one per action (`gage_borrow`, …), each acting for the signer's wallet only,
+   * on every network. Whether they act under spend limits is the wallet owner's choice (`limit`, D297, D311).
    */
   signer?: Signer;
   /** The spend limit every action of the signer's is carried out under (D297): asked with its plan, before anything is sent. */
@@ -108,9 +107,6 @@ export function gageTools(gage: Gage, options: ToolOptions = {}): GageTool[] {
   const signer = options.signer;
   if (!signer) return tools;
   const limit = options.limit;
-  if (!signingToolsOpen(gage.deployment.chainId) && !limit) {
-    throw new ApiError("SIGNING_CLOSED", "On mainnet the tools that sign with an agent's own key need spend limits; prepare, and let the wallet's owner sign", 403);
-  }
   const who = short(signer.address);
   tools.push(tool("gage_wallet", "This wallet", `The wallet this server signs with (${who}): its address, ETH for gas, USDG, lend assets and collateral tokens.`, emptyInput, READ, () => gage.balances(signer.address)));
   for (const [action, shape] of served(Object.entries(signedShapes) as [ActionName, z.ZodObject][])) {

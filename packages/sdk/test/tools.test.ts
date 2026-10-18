@@ -84,9 +84,12 @@ describe("the tool catalogue on mainnet", () => {
     expect(prepared).toMatchObject({ status: "ready", next: { transaction: { chainId: 4663 } } });
   });
 
-  it("serves a signer only with spend limits (D225, D297)", () => {
-    expect(() => gageTools(mainnet(), { signer: fakeSigner() })).toThrow(ApiError);
-    try { gageTools(mainnet(), { signer: fakeSigner() }); } catch (e) { expect((e as ApiError).code).toBe("SIGNING_CLOSED"); }
+  it("serves a signer without a spend limit too: the wallet's owner chooses (D311)", async () => {
+    const signer = fakeSigner();
+    const tools = gageTools(gageFrom(ctx({ d: parseDeployment(mainnetManifest()) })), { signer });
+    expect(tools).toHaveLength(32);
+    expect(await byName(tools, "gage_borrow").execute(borrow)).toMatchObject({ status: "done" });
+    expect(signer.sent.every((t) => t.chainId === 4663)).toBe(true);
   });
 
   it("hands every action of a limited signer's to its limit, with the plan, before anything is sent", async () => {

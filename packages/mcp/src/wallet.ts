@@ -90,15 +90,18 @@ async function fund(faucetUrl: string, to: string, fetcher: typeof fetch): Promi
   };
 }
 
-/** How each agent adds the server that signs with this wallet: the prompt on gage.cash says "do what it prints". */
+/**
+ * How each agent adds the server that signs with this wallet on the testnet: the prompt on testnet.gage.cash says "do
+ * what it prints". The server serves mainnet unless told otherwise (D311), so it is told the testnet.
+ */
 export const NEXT = [
-  "Next: add gage's MCP server, which runs `npx -y gage-mcp` and signs with this wallet, then restart so its tools load.",
-  "  Claude Code: `claude mcp add gage -- npx -y gage-mcp`",
-  "  Codex: `codex mcp add gage -- npx -y gage-mcp`",
-  '  Hermes: under mcp_servers in ~/.hermes/config.yaml, `gage: { command: "npx", args: ["-y", "gage-mcp"] }`, then /reload-mcp',
-  "  Any other agent: a stdio MCP server named gage that runs `npx -y gage-mcp`.",
+  "Next: add gage's MCP server, which runs `npx -y gage-mcp` on the testnet and signs with this wallet, then restart so its tools load.",
+  "  Claude Code: `claude mcp add gage -e GAGE_NETWORK=testnet -- npx -y gage-mcp`",
+  "  Codex: `codex mcp add gage --env GAGE_NETWORK=testnet -- npx -y gage-mcp`",
+  '  Hermes: under mcp_servers in ~/.hermes/config.yaml, `gage: { command: "npx", args: ["-y", "gage-mcp"], env: { GAGE_NETWORK: "testnet" } }`, then /reload-mcp',
+  "  Any other agent: a stdio MCP server named gage that runs `npx -y gage-mcp` with GAGE_NETWORK=testnet.",
 ] as const;
-/** The same on mainnet, where the server is told its network (D260). */
+/** The same on mainnet, where the server is told its network (D260), as earlier releases needed. */
 export const NEXT_MAINNET = [
   "Next: add gage's MCP server, which runs `npx -y gage-mcp` on mainnet and signs with this wallet, then restart so its tools load.",
   "  Claude Code: `claude mcp add gage -e GAGE_NETWORK=mainnet -- npx -y gage-mcp`",
@@ -128,7 +131,7 @@ export async function init(o: InitOptions): Promise<{ address: string; created: 
   const chainId = o.gage.deployment.chainId, mainnet = chainId === MAINNET;
   const file = keyFile(o.home, chainId);
   const { key, created } = ensureKey(file);
-  const signer = privateKeySigner(key, { ...(o.rpcUrl ? { rpcUrl: o.rpcUrl } : {}), ...(mainnet ? { network: "mainnet" as const } : {}) });
+  const signer = privateKeySigner(key, { ...(o.rpcUrl ? { rpcUrl: o.rpcUrl } : {}), network: mainnet ? "mainnet" : "testnet" });
   o.out(`Your gage wallet on Robinhood Chain${mainnet ? "" : " testnet"} (${chainId}): ${signer.address}`);
   o.out(created ? `Made just now. Its key is in ${file}, readable only by you: never print, share or move it.` : `It already existed; its key is in ${file}.`);
   if (o.faucetUrl) {
@@ -147,7 +150,7 @@ export async function init(o: InitOptions): Promise<{ address: string; created: 
   }
   if (o.limits) {
     o.out(`Spend limits: ${limitsSentence(o.limits)}`);
-    o.out("Change them in the server's environment: GAGE_MAX_BORROW_USDG, GAGE_MAX_BORROW_DAY_USDG, GAGE_MAX_DEPOSIT_USDG, GAGE_MAX_DEPOSIT_DAY_USDG (amounts of USDG).");
+    o.out("Change them in the server's environment: GAGE_MAX_BORROW_USDG, GAGE_MAX_BORROW_DAY_USDG, GAGE_MAX_DEPOSIT_USDG, GAGE_MAX_DEPOSIT_DAY_USDG (amounts of USDG, or off for no limit).");
   }
   for (const line of mainnet ? NEXT_MAINNET : NEXT) o.out(line);
   return { address: signer.address, created, signer };

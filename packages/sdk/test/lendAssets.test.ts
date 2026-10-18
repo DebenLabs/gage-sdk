@@ -11,7 +11,7 @@ import { engineOf, lendsMore, parseDeployment } from "../src/deployment.js";
 import { ApiError } from "../src/errors.js";
 import { redeemableShares } from "../src/plans.js";
 import { prepareNext } from "../src/prepare.js";
-import { assets, borrowQuote, capabilities, earnVaults, LEND_ASSET_RULE, leverageQuote, loan, portfolio } from "../src/reads.js";
+import { assets, borrowQuote, capabilities, earnVaults, LEND_ASSET_RULE, leverageQuote, loan, portfolio, PRIVATE_RULE } from "../src/reads.js";
 import { run } from "../src/run.js";
 import {
   A, assetManifest, CORE, ctx, fakeChain, fakeSigner, fakeUpstream, GLD_CORE, GLD_FACTORY, GLD_REG, GLD_VAULT, GLDX, loan as chainLoan, manifest, NOW, NVDA, position,
@@ -247,6 +247,10 @@ describe("the reads", () => {
     const today = await capabilities(ctx());
     expect(today).not.toHaveProperty("lendAssets");
     expect(today.rules).not.toContain(LEND_ASSET_RULE);
+    // Mainnet offers no 1-day term (D241), so the rule promises none (D311); the terms each core offers say the rest.
+    expect(LEND_ASSET_RULE).not.toMatch(/1-day/);
+    // No read or action serves a private loan (D222), and the rules say so.
+    for (const rules of [caps.rules, today.rules]) expect(rules).toContain(PRIVATE_RULE);
   });
 
   it("give one collateral row per asset it is borrowed in, GLDx's from its own registry and never leveraged", async () => {

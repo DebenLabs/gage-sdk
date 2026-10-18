@@ -17,7 +17,7 @@ export {
 export { MAINNET_MANIFEST } from "./deployments/mainnet.js";
 export { TESTNET_MANIFEST } from "./deployments/testnet.js";
 export {
-  actionsOn, defaultsFor, MAINNET_DEFAULTS, networkNamed, signingToolsOpen, TESTNET_DEFAULTS, type Beacon, type Network, type NetworkDefaults,
+  actionsOn, defaultsFor, MAINNET_DEFAULTS, networkNamed, TESTNET_DEFAULTS, type Beacon, type Network, type NetworkDefaults,
 } from "./networks.js";
 export { ApiError, refusalOf, requireThat } from "./errors.js";
 export {
@@ -27,7 +27,7 @@ export {
 export { waitForFill, type FillOutcome, type WaitOptions } from "./fill.js";
 export { generationFor, redeemableShares, type Ctx, type InAsset, type Made, type Plan, type Row, type Step, type Summary, type TokenRef, type Tx, type View } from "./plans.js";
 export { prepareNext, type NextTx, type Prepared } from "./prepare.js";
-export { LEND_ASSET_RULE, RULES } from "./reads.js";
+export { LEND_ASSET_RULE, PRIVATE_RULE, RULES } from "./reads.js";
 export { run, type Hold, type RunOptions, type RunResult, type SentStep, type SpendLimit } from "./run.js";
 export {
   ACTIONS, actionInput, actionShapes, borrowQuoteInput, emptyInput, leverageQuoteInput, loanInput, parseInput, reviewAdvance, reviewToken, signedShapes, walletInput,

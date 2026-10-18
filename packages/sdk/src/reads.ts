@@ -10,6 +10,8 @@ import { actionsOn, defaultsFor } from "./networks.js";
 import { aboveMinimum, collateralOf, generationFor, leverageTerms, refOf, termsOf, usdgOnly, type Ctx } from "./plans.js";
 import type { ActionName } from "./schemas.js";
 
+/** What gage for agents leaves out (D222): a private loan stays private, so no read or action serves one. */
+export const PRIVATE_RULE = "Private loans are never served: no read shows one and no action acts on one. They are opened and managed on gage.cash alone.";
 /** The rules an agent must know before acting, in the design brief's words: no liquidation always with its definition. */
 export const RULES = [
   "Loans have a fixed cost and a fixed term. There is no liquidation: the loan is never closed early because a price moves.",
@@ -17,10 +19,14 @@ export const RULES = [
   "There is no grace period: repay before the term's last second.",
   "Lending goes through partner vaults only: deposit USDG into one with earn_deposit. A wallet cannot fund a loan directly.",
   "gage never signs, sends or holds a key. Every prepare answer is an unsigned transaction; the wallet's owner, or the owner's own agent, signs it.",
+  PRIVATE_RULE,
 ] as const;
-/** What a loan in another asset means (D251), said once a lend asset is public. */
+/**
+ * What a loan in another asset means (D251), said once a lend asset is public. It names no term: each core's terms are
+ * in `terms` and `lendAssets`, and mainnet offers no 1-day term (D241, D311).
+ */
 export const LEND_ASSET_RULE =
-  "A loan in a lend asset (lendAssets) is paid out and repaid in that asset, and its vaults take and pay out that asset: in dollars, what you repay moves with its price. Leverage, 1-day loans and sGAGE rewards are USDG's only.";
+  "A loan in a lend asset (lendAssets) is paid out and repaid in that asset, and its vaults take and pay out that asset: in dollars, what you repay moves with its price. Leverage and sGAGE rewards are USDG's only.";
 
 const lower = (a: string) => a.toLowerCase();
 const same = (a: string, b: string) => lower(a) === lower(b);

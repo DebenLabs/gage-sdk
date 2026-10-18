@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+- **Mainnet is the default.** `createGage()` is Robinhood Chain (4663) with gage.cash's own services, and
+  `privateKeySigner(key)` signs for it. The testnet is `createGage({ network: "testnet" })` and
+  `privateKeySigner(key, { network: "testnet" })`; a manifest given without a network still decides it. Breaking:
+  code that relied on the testnet default must name it.
+- **`gageTools` serves a signer's tools on mainnet with or without a spend limit.** Whether an agent signs under limits
+  is its wallet owner's choice. `SIGNING_CLOSED` and `signingToolsOpen` are gone.
+- **The rules say what is left out.** `capabilities().rules` adds that private loans are never served
+  (`PRIVATE_RULE`), and the lend-asset rule no longer names 1-day loans, which mainnet does not offer; each core's
+  terms are in `terms` and `lendAssets`.
+
 ## 0.5.1
 
 - **A loan the private lane opened stays private, whatever gage's index says.** The chain must show that no

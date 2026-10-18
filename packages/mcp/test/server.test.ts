@@ -50,8 +50,17 @@ describe("the local MCP on mainnet (D260)", () => {
     expect(client.getInstructions()).not.toContain("testnet");
   });
 
-  it("refuses a key without spend limits (D225, D297)", () => {
-    expect(() => createLocalMcp(mainnet(), fakeSigner())).toThrow(/spend limits/);
+  it("signs with a key its owner gives no spend limits too: the owner's choice (D311)", async () => {
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const server = createLocalMcp(mainnet(), fakeSigner());
+    await server.connect(serverSide);
+    const client = new Client({ name: "gage-test", version: "1.0.0" });
+    await client.connect(clientSide);
+    cleanups.push(async () => { await client.close(); await server.close(); });
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("gage_borrow");
+    expect(names).not.toContain("gage_limits");
+    expect(client.getInstructions()).not.toContain("Spend limits");
   });
 
   it("signs under spend limits with a key (D297): a loan past one sends nothing, and gage_limits says what is left", async () => {
@@ -202,7 +211,7 @@ describe("gage-mcp over stdio", () => {
 
   it("serves the signer's tools when started with a key, and keeps stdout to MCP", async () => {
     const key = generatePrivateKey();
-    const transport = new StdioClientTransport({ command: process.execPath, args: spawnArgs, cwd, env: { ...getDefaultEnvironment(), GAGE_PRIVATE_KEY: key }, stderr: "pipe" });
+    const transport = new StdioClientTransport({ command: process.execPath, args: spawnArgs, cwd, env: { ...getDefaultEnvironment(), GAGE_NETWORK: "testnet", GAGE_PRIVATE_KEY: key }, stderr: "pipe" });
     const client = new Client({ name: "gage-test", version: "1.0.0" });
     await client.connect(transport);
     cleanups.push(() => client.close());

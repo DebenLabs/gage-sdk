@@ -2,16 +2,17 @@
 
 gage's MCP server for an AI agent that holds its own money: it borrows and earns on [gage](https://gage.cash),
 fixed-cost loans with no liquidation (a loan is never closed early because a price moves; unpaid at the end of its term,
-the lenders keep the collateral and nothing else is taken). **Robinhood Chain testnet (46630)**, and Robinhood Chain
-(4663) under spend limits (see Mainnet).
+the lenders keep the collateral and nothing else is taken). **Robinhood Chain (4663)**, under spend limits you may
+lift, and its testnet (46630, see Testnet).
 
 ```bash
 npx -y gage-mcp init
 ```
 
-`init` makes the agent's own wallet on this computer: its key in `~/.gage/agent-46630.key`, readable only by this user,
-made once and never overwritten. On the testnet it funds it from gage's faucet. It prints the address and how to add
-the server, never the key. Then add the server to the agent:
+`init` makes the agent's own wallet on this computer: its key in `~/.gage/agent-4663.key`, readable only by this user,
+made once and never overwritten. It prints the address, its spend limits and how to add the server, never the key.
+Nobody funds it but you: send it only what the agent may use, and a little ETH for gas. Then add the server to the
+agent:
 
 ```bash
 claude mcp add gage -- npx -y gage-mcp     # Claude Code
@@ -24,8 +25,8 @@ Any client with an `mcpServers` file (Claude Desktop, Cursor, Hermes, …):
 { "mcpServers": { "gage": { "command": "npx", "args": ["-y", "gage-mcp"] } } }
 ```
 
-With the wallet `init` made, the server has 24 tools on the testnet, and 33 on mainnet under spend limits (rolling
-over, `gage_limits` and the rating, see Mainnet):
+With the wallet `init` made, the server has 33 tools on mainnet (`gage_limits`, rolling over and the rating among
+them), and 24 on the testnet:
 - seven reads (`gage_capabilities`, `gage_assets`, `gage_borrow_quote`, `gage_leverage_quote`, `gage_loan`,
   `gage_portfolio`, `gage_earn_vaults`) and `gage_wallet`;
 - a preview that sends nothing for each action (`gage_prepare_*`);
@@ -56,29 +57,27 @@ borrow, and on Earn the asset each vault takes. Leverage stays USDG's.
 Without a key it keeps the reads and the previews: the agent prepares, and you sign elsewhere. For a person who signs
 every step on gage.cash, the hosted server is the one to use (Steward, /agents/steward on gage.cash).
 
-## Mainnet
+## Testnet
 
-`GAGE_NETWORK=mainnet` serves Robinhood Chain with gage.cash's own services. Without a key it reads and previews,
-for your own wallet to sign. With one it signs under spend limits:
+`GAGE_NETWORK=testnet` serves Robinhood Chain testnet, with test assets only:
 
 ```bash
-GAGE_NETWORK=mainnet npx -y gage-mcp init
+GAGE_NETWORK=testnet npx -y gage-mcp init
 ```
 
-makes the agent's mainnet wallet (`~/.gage/agent-4663.key`, apart from the testnet's) and prints its address, never
-its key. Nobody funds it but you: send it only what the agent may use, and a little ETH for gas. Then add the server,
-told its network:
+makes the agent's testnet wallet (`~/.gage/agent-46630.key`, apart from the mainnet one) and funds it from gage's
+faucet. Then add the server, told its network:
 
 ```bash
-claude mcp add gage -e GAGE_NETWORK=mainnet -- npx -y gage-mcp     # Claude Code
-codex mcp add gage --env GAGE_NETWORK=mainnet -- npx -y gage-mcp    # Codex
+claude mcp add gage -e GAGE_NETWORK=testnet -- npx -y gage-mcp     # Claude Code
+codex mcp add gage --env GAGE_NETWORK=testnet -- npx -y gage-mcp    # Codex
 ```
 
 ```json
-{ "mcpServers": { "gage": { "command": "npx", "args": ["-y", "gage-mcp"], "env": { "GAGE_NETWORK": "mainnet" } } } }
+{ "mcpServers": { "gage": { "command": "npx", "args": ["-y", "gage-mcp"], "env": { "GAGE_NETWORK": "testnet" } } } }
 ```
 
-### Spend limits
+## Spend limits
 
 | Setting | On mainnet unless set | |
 |---|---|---|
@@ -87,8 +86,9 @@ codex mcp add gage --env GAGE_NETWORK=mainnet -- npx -y gage-mcp    # Codex
 | `GAGE_MAX_DEPOSIT_USDG` | 100 | the most one deposit puts into a partner vault |
 | `GAGE_MAX_DEPOSIT_DAY_USDG` | 250 | the most deposits put in in any 24 hours |
 
-Amounts of USDG, whole or with up to six decimals; 0 stops that kind of action, and a setting that is not an amount
-stops the server from starting. On the testnet only the limits you set apply. Repaying, cashing out, withdrawing,
+Amounts of USDG, whole or with up to six decimals; 0 stops that kind of action, `off` lifts that limit, and any other
+setting stops the server from starting. Whether the agent signs under limits is your choice: with all four `off` it
+signs without any. On the testnet only the limits you set apply. Repaying, cashing out, withdrawing,
 cancelling and collecting are not limited: they bring money or collateral back to the wallet. A roll counts only what
 it borrows beyond the loan it repays, and the server rolls at the same size, so nothing; leaving a loan to roll by
 itself, or ending that, moves nothing. Nor are actions in an asset other than USDG limited, nor a rating of gage, which
@@ -110,7 +110,7 @@ An agent that already keeps its own wallet's key in a file can sign here with th
 | `GAGE_PRIVATE_KEY_FILE` | a key of your own instead of `init`'s: a file holding only the 0x-prefixed key, mode 600 (the server warns on stderr when other users can read it) |
 | `GAGE_PRIVATE_KEY` | the key itself, when a file is not possible; removed from the environment once read |
 | `GAGE_HOME` | where `init` keeps the wallet and the limits keep their record; `~/.gage` when unset. It must be yours, writable by no one else, and the wallet's key a file of yours only you can read: otherwise the key is refused (`KEY_FILE_UNSAFE`) and so is a limited action (`LIMITS_UNSAFE`, or `LIMITS_UNREADABLE` when the record cannot be read) |
-| `GAGE_NETWORK` | `testnet` (the default) or `mainnet` (see Mainnet) |
+| `GAGE_NETWORK` | `mainnet` (the default) or `testnet` (see Testnet) |
 | `GAGE_MAX_BORROW_USDG`, `GAGE_MAX_BORROW_DAY_USDG`, `GAGE_MAX_DEPOSIT_USDG`, `GAGE_MAX_DEPOSIT_DAY_USDG` | the spend limits (see Spend limits) |
 | `GAGE_RPC_URL`, `GAGE_INDEXER_URL`, `GAGE_RATES_URL`, `GAGE_VALUATION_URL`, `GAGE_FAUCET_URL` | elsewhere than the network's own services |
 
@@ -124,7 +124,7 @@ An agent that already keeps its own wallet's key in a file can sign here with th
   injected into a page or a token name cannot make it pay someone; an aggregator's call is decoded before it is used.
 - **Clients ask before acting.** The signing tools carry MCP's destructive hint, so a client asks before each one
   unless you allow it.
-- **On mainnet, never past its spend limits**, checked with each action's plan before anything is sent.
+- **Never past the spend limits it keeps**, checked with each action's plan before anything is sent.
 - **Private loans** are never read or acted on.
 - **Logs go to stderr.** stdout carries MCP messages only.
 

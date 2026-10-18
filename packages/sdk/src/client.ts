@@ -1,7 +1,7 @@
 /**
  * The SDK's one entry (D224): `createGage()` reads gage, prepares unsigned transactions and, given the caller's own
- * signer, carries actions out. Every default is the hosted testnet (D222), so it serves real data with no setup;
- * `createGage({ network: "mainnet" })` is gage on Robinhood Chain (D260), with mainnet's own defaults.
+ * signer, carries actions out. Every default is mainnet's (D260, D311): Robinhood Chain and gage.cash's own services, so
+ * it serves real data with no setup; `createGage({ network: "testnet" })` is gage on Robinhood Chain testnet (D222).
  */
 import type { Address } from "viem";
 import { createChain } from "./chain.js";
@@ -21,8 +21,8 @@ import { createUpstream } from "./upstream.js";
 
 export interface GageOptions {
   /**
-   * The network: "testnet" (the default) or "mainnet" (Robinhood Chain, D260). It picks the manifest bundled with the
-   * SDK and every default below; a manifest passed in must be that network's.
+   * The network: "mainnet" (Robinhood Chain, the default since D311) or "testnet". It picks the manifest bundled with
+   * the SDK and every default below; a manifest passed in must be that network's.
    */
   network?: Network;
   /** A live manifest (`launch/live/<chainId>.json`); the network's snapshot bundled with the SDK when omitted. */
@@ -115,10 +115,13 @@ export function gageFrom(ctx: Ctx, scope: GageScope = {}): Gage {
   };
 }
 
-/** A Gage on the hosted testnet, on mainnet (`network: "mainnet"`), or wherever the options point. */
+/**
+ * A Gage on mainnet (the default since D311), on the hosted testnet (`network: "testnet"`), or wherever the options
+ * point. A manifest given without a network decides it.
+ */
 export function createGage(options: GageOptions = {}): Gage {
   const named = options.network === undefined ? undefined : networkNamed(options.network);
-  const bundled = named?.network === "mainnet" ? MAINNET_MANIFEST : TESTNET_MANIFEST;
+  const bundled = named?.network === "testnet" ? TESTNET_MANIFEST : MAINNET_MANIFEST;
   const d = parseDeployment(options.manifest ?? bundled);
   if (named && named.chainId !== d.chainId) throw new ApiError("NETWORK_MISMATCH", `The manifest is not the ${named.network}'s`, 400);
   const n = defaultsFor(d.chainId);

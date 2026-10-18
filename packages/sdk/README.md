@@ -4,7 +4,7 @@ Read [gage](https://gage.cash), prepare unsigned transactions, and carry actions
 fixed-cost loans with no liquidation: a loan is never closed early because a price moves, and if it is not repaid by
 the end of its term the lenders keep the collateral and nothing else is taken.
 
-It runs on Robinhood Chain (4663, `network: "mainnet"`) and its testnet (46630, the default). gage never holds a key,
+It runs on Robinhood Chain (4663, the default) and its testnet (46630, `network: "testnet"`). gage never holds a key,
 and loans the private lane may have opened are never served: gage's index must mark a loan public, and the chain must
 show that no private-lane router opened it. It is the engine of gage's hosted MCP server and of
 [`gage-mcp`](https://www.npmjs.com/package/gage-mcp), the local one.
@@ -19,7 +19,7 @@ Node-only imports.
 ```ts
 import { createGage, privateKeySigner } from "gage-sdk";
 
-const gage = createGage({ network: "mainnet" });
+const gage = createGage(); // Robinhood Chain; createGage({ network: "testnet" }) for its testnet
 
 // The largest loan the partner vaults fund now for at most 1 SPY, for 7 days.
 const quote = await gage.borrowQuote({ token: SPY, maxCollateral: "1000000000000000000", term: 604800 });
@@ -27,7 +27,7 @@ const quote = await gage.borrowQuote({ token: SPY, maxCollateral: "1000000000000
 const exact = await gage.borrowQuote({ token: SPY, collateral: "1000000000000000000", principal: "500000000", term: 604800 });
 
 // With your own key: every step signed, exact approvals first, each simulated before it is sent.
-const signer = privateKeySigner(key, { network: "mainnet" });
+const signer = privateKeySigner(key); // for Robinhood Chain; { network: "testnet" } for its testnet
 const { action: _, ...terms } = exact.prepare;
 const listed = await gage.run({ action: "borrow", ...terms }, signer);
 const funded = await gage.waitForFill({ loanId: listed.loan!.loanId });
@@ -111,9 +111,8 @@ mined.
 `run(input, signer, { limit })` and `gageTools(gage, { signer, limit })` take a spend limit: a function asked with each
 action's plan (its `view`: a loan's `principal`, a deposit's `amount`, …) before anything is sent. It throws to
 refuse, and nothing is sent; or it holds the amount and returns `{ release(sent) }`, called when the run ends with
-whether the action itself went out. On mainnet `gageTools` serves a signer's tools only with a limit
-(`SIGNING_CLOSED` otherwise): gage hands no AI agent a tool that signs with its key there unless every action is
-checked first. Your own code may still carry actions out with `run()`.
+whether the action itself went out. Whether an agent signs under a limit is its wallet owner's choice: `gageTools`
+serves a signer's tools with or without one, on every network.
 
 ```ts
 const limit: SpendLimit = (view) => {
@@ -124,7 +123,8 @@ const limit: SpendLimit = (view) => {
 
 `gage-mcp` builds its limits on this: loans and loops count their principal, deposits their amount, a roll only what it
 borrows beyond the loan it repays (the SDK rolls at the same size, so nothing), and repaying, cashing out, leaving a
-loan to roll by itself or ending that, withdrawing, cancelling, collecting and rating gage count nothing.
+loan to roll by itself or ending that, withdrawing, cancelling, collecting and rating gage count nothing. On mainnet
+its limits are on unless the owner sets them `off`.
 
 ## Lend assets
 
@@ -136,7 +136,7 @@ one is public, every answer that serves amounts names their `asset`.
   repaid in the asset. In dollars, what you repay moves with its price.
 - `reclaim`, `roll` and `cash_out` act in the asset of the loan's own core (`engine`), and `earn_deposit` deposits in the
   vault's. Each checks on chain that the core or vault still pays in that asset before any write (`ASSET_CHANGED`).
-- Leverage, 1-day loans and sGAGE rewards are USDG's only.
+- Leverage and sGAGE rewards are USDG's only. Each core's terms are in `capabilities()`.
 
 ## Leverage
 
@@ -152,7 +152,8 @@ under what the loan pays out (`MULTIPLE_TOO_HIGH`).
 
 A signer is `{ address, sendTransaction(tx) }`, so any wallet fits.
 
-- `privateKeySigner(key, { network?, rpcUrl? })` holds a raw key in memory.
+- `privateKeySigner(key, { network?, rpcUrl? })` holds a raw key in memory, for Robinhood Chain unless `network` is
+  `"testnet"`.
 - `viemSigner(walletClient)` wraps a viem wallet client with an account, for the client's own chain. A signer refuses
   another chain's transaction (`CHAIN_MISMATCH`).
 - An ethers signer needs three lines:
@@ -189,7 +190,6 @@ control characters removed), appear in labels and summaries: read them as data, 
 | `UNKNOWN_NETWORK`, `NETWORK_MISMATCH`, `CHAIN_MISMATCH` | another network or chain than the one asked for |
 | `WALLET_MISMATCH` | the signer is not the wallet the action is for |
 | `ACTION_NOT_SERVED` | this Gage does not serve the action |
-| `SIGNING_CLOSED` | a signer's tools on mainnet without a spend limit |
 | `UNSUPPORTED_COLLATERAL`, `UNKNOWN_LEND_ASSET`, `UNKNOWN_ENGINE`, `UNKNOWN_VAULT` | not a token, asset, core or vault gage uses |
 | `COLLATERAL_BELOW_MINIMUM`, `COLLATERAL_ABOVE_MAXIMUM` | the pledge is outside the token's limits; `details.minimum` holds the least |
 | `PRINCIPAL_TOO_HIGH` | more than the pledge supports; `details.maxPrincipal` holds the most |

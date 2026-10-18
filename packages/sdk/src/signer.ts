@@ -31,14 +31,14 @@ export function viemSigner(client: WalletClient, chain: Chain = client.chain ?? 
 }
 
 /**
- * A signer holding a raw private key in memory, for `network`'s chain (the testnet by default; "mainnet" is Robinhood
- * Chain, D260), sending through `rpcUrl` (that chain's public RPC by default). The key is never echoed: a malformed one
- * is refused in fixed words.
+ * A signer holding a raw private key in memory, for `network`'s chain (Robinhood Chain by default since D311; "testnet"
+ * is its testnet), sending through `rpcUrl` (that chain's public RPC by default). The key is never echoed: a malformed
+ * one is refused in fixed words.
  */
 export function privateKeySigner(key: string, options: { rpcUrl?: string; network?: Network } = {}): Signer {
   requireThat(/^0x[0-9a-fA-F]{64}$/.test(key), "INVALID_KEY", "The private key must be 0x and 64 hex digits", 400);
   const account = privateKeyToAccount(key as Hex);
-  const chain = chainFor(networkNamed(options.network ?? "testnet").chainId);
+  const chain = chainFor(networkNamed(options.network ?? "mainnet").chainId);
   const rpcUrl = options.rpcUrl ?? chain.rpcUrls.default.http[0];
   return viemSigner(createWalletClient({ account, chain, transport: http(rpcUrl, { timeout: 30_000, retryCount: 1 }) }), chain);
 }

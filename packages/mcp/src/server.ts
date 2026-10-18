@@ -3,15 +3,16 @@
  * and prepares unsigned transactions. With a key it also carries actions out, signing in this process. The key never
  * leaves the process, and gage never sees it. It signs only the transactions gage's own planner builds, to gage's
  * contracts and, for a rating of gage on mainnet (D302), to ERC-8004's Reputation Registry: there is no tool that sends
- * arbitrary calldata. On the testnet (46630, D222) with or without a key; on mainnet (4663, D260) with a key only under
- * spend limits (D225, D297), which every action is checked against before anything is sent.
+ * arbitrary calldata. On mainnet (4663, D260, the default since D311) and the testnet (46630, D222), with or without a
+ * key; on mainnet a key signs under spend limits (D297) unless its owner lifts them (D311), and every action is checked
+ * against the limits kept before anything is sent.
  */
 import { ACTIONS, MAINNET, MAINNET_DEFAULTS, TESTNET, gageTools, refusalOf, type ActionName, type Gage, type Signer } from "gage-sdk";
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { limitsOf, limitsSentence, NOT_LIMITED_WORDS, spendLimit, type Ledger, type Limits } from "./limits.js";
 
-export const VERSION = "0.5.1";
+export const VERSION = "0.6.0";
 
 const WHERE: Record<number, string> = {
   [TESTNET]: "on Robinhood Chain testnet (46630). Test assets only.",

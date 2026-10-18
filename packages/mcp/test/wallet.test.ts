@@ -69,8 +69,9 @@ describe("Valet's wallet", () => {
     expect(lines[0]).toContain(done.address);
     expect(lines.join("\n")).toContain("Funded from gage's testnet faucet: 0.02 ETH, USDG.");
     expect(lines.join("\n")).toContain("NVDAx (COOLDOWN)");
-    expect(lines.join("\n")).toContain("Claude Code: `claude mcp add gage -- npx -y gage-mcp`");
-    expect(lines.join("\n")).toContain("Codex: `codex mcp add gage -- npx -y gage-mcp`");
+    // The server serves mainnet unless told otherwise (D311), so the testnet's next step names the testnet.
+    expect(lines.join("\n")).toContain("Claude Code: `claude mcp add gage -e GAGE_NETWORK=testnet -- npx -y gage-mcp`");
+    expect(lines.join("\n")).toContain("Codex: `codex mcp add gage --env GAGE_NETWORK=testnet -- npx -y gage-mcp`");
     expect(lines.join("\n")).not.toContain(key.slice(2));
     // Run again: the same wallet.
     const again: string[] = [];
@@ -125,7 +126,7 @@ describe("gage-mcp init, then gage-mcp", () => {
     const address = stub.address();
     if (!address || typeof address === "string") throw new Error("No port");
     const dir = home();
-    const env = { ...getDefaultEnvironment(), GAGE_HOME: dir, GAGE_FAUCET_URL: `http://127.0.0.1:${address.port}` };
+    const env = { ...getDefaultEnvironment(), GAGE_HOME: dir, GAGE_NETWORK: "testnet", GAGE_FAUCET_URL: `http://127.0.0.1:${address.port}` };
 
     // Asynchronously: the stub faucet answers from this process, which a synchronous spawn would block.
     const made = await promisify(execFile)(process.execPath, ["--import", "tsx", cli, "init"], { cwd, env, encoding: "utf8", timeout: 30_000 });
@@ -142,9 +143,10 @@ describe("gage-mcp init, then gage-mcp", () => {
     expect(client.getInstructions()).toContain(wallet);
   }, 60_000);
 
-  it("on mainnet serves without a key; init makes Valet's wallet, and the server signs with it under spend limits (D297)", async () => {
+  it("serves mainnet unless told otherwise (D311): without a key; init makes Valet's wallet, and the server signs with it under spend limits (D297) its owner may lift", async () => {
     const run = promisify(execFile);
-    const env = { ...getDefaultEnvironment(), GAGE_HOME: home(), GAGE_NETWORK: "mainnet" };
+    // No GAGE_NETWORK: mainnet is the default.
+    const env = { ...getDefaultEnvironment(), GAGE_HOME: home() };
     const refused = async (args: string[], extra: Record<string, string> = {}) => {
       try { await run(process.execPath, ["--import", "tsx", cli, ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 30_000 }); return "ran"; }
       catch (e) { return String((e as { stderr?: string }).stderr); }
@@ -174,6 +176,9 @@ describe("gage-mcp init, then gage-mcp", () => {
     expect(valet.getInstructions()).toContain("it borrows at most 100 USDG a loan or loop and 250 USDG in any 24 hours");
     const owners = await serve({ GAGE_MAX_BORROW_USDG: "20", GAGE_MAX_DEPOSIT_DAY_USDG: "1000.5" });
     expect(owners.getInstructions()).toContain("it borrows at most 20 USDG a loan or loop and 250 USDG in any 24 hours, and deposits at most 100 USDG at a time and 1000.5 USDG in any 24 hours");
+    const lifted = await serve({ GAGE_MAX_BORROW_USDG: "off", GAGE_MAX_BORROW_DAY_USDG: "off", GAGE_MAX_DEPOSIT_USDG: "off", GAGE_MAX_DEPOSIT_DAY_USDG: "off" });
+    expect((await lifted.listTools()).tools).toHaveLength(33);
+    expect(lifted.getInstructions()).toContain("it borrows without a limit, and deposits without a limit");
   }, 90_000);
 
   it("refuses a network it does not know", async () => {

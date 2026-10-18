@@ -1,6 +1,6 @@
 {
   "name": "gage-mcp",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "mcpName": "cash.gage/gage",
   "type": "module",
   "description": "gage's MCP server for agents with their own wallet: `npx -y gage-mcp init`, then borrow and earn on gage. Robinhood Chain under spend limits, and its testnet.",

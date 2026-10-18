@@ -205,11 +205,12 @@ describe("a key's signer", () => {
   const KEY = generatePrivateKey();
   const tx = (chainId: number) => ({ to: USDG, data: "0x" as const, value: 0n, gas: 21_000n, chainId });
 
-  it("is the testnet's unless mainnet is named, and refuses another chain's transaction", async () => {
+  it("is mainnet's unless the testnet is named (D311), and refuses another chain's transaction", async () => {
     const { privateKeySigner } = await import("../src/signer.js");
     // The refusal comes before anything is signed or sent.
     const send = (s: ReturnType<typeof privateKeySigner>, chainId: number) => code((async () => s.sendTransaction(tx(chainId)))());
-    expect(await send(privateKeySigner(KEY), 4663)).toBe("CHAIN_MISMATCH");
+    expect(await send(privateKeySigner(KEY), 46630)).toBe("CHAIN_MISMATCH");
+    expect(await send(privateKeySigner(KEY, { network: "testnet" }), 4663)).toBe("CHAIN_MISMATCH");
     expect(await send(privateKeySigner(KEY, { network: "mainnet" }), 46630)).toBe("CHAIN_MISMATCH");
     expect(() => privateKeySigner(KEY, { network: "base" as "mainnet" })).toThrow(/Unknown network/);
   });

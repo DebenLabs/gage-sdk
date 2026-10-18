@@ -1,7 +1,7 @@
 /**
  * Where gage runs: Robinhood Chain (4663) since D260, and its testnet (46630, D222). Each network has its public RPC,
- * gage's own services there and the app. The testnet stays the default: mainnet is chosen by name (`network:
- * "mainnet"`) or by a mainnet manifest.
+ * gage's own services there and the app. Mainnet is the default since D311: the testnet is chosen by name (`network:
+ * "testnet"`) or by a testnet manifest.
  */
 import type { Address } from "viem";
 import { MAINNET, TESTNET, type ChainId, type Deployment } from "./deployment.js";
@@ -83,14 +83,6 @@ export function networkNamed(name: unknown): NetworkDefaults {
   if (name === "testnet") return TESTNET_DEFAULTS;
   throw new ApiError("UNKNOWN_NETWORK", 'Unknown network: use "mainnet" or "testnet"', 400);
 }
-
-/**
- * Whether gage hands an AI agent tools that sign with its own key (Valet: gage-mcp with a key, `gageTools` with a
- * signer) on this chain without spend limits. Not on mainnet (D225, D260): there the signer's tools come only with a
- * spend limit (D297), and without one an agent prepares and its owner signs. A builder's own code may still carry an
- * action out with `run()` and its own signer.
- */
-export const signingToolsOpen = (chainId: ChainId) => chainId !== MAINNET;
 
 /**
  * The actions gage serves on a deployment: every one it can carry out there. Rating gage (`feedback`, D302) only where

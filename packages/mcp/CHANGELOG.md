@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- **Mainnet is the default.** Without `GAGE_NETWORK` the server and `init` serve Robinhood Chain (4663);
+  `GAGE_NETWORK=testnet` serves the testnet, and `init` there prints the commands that name it. Breaking: a setup that
+  relied on the testnet default must set `GAGE_NETWORK=testnet`.
+- **The owner may lift a spend limit with `off`**, one setting at a time: `GAGE_MAX_BORROW_USDG=off` and the rest. The
+  mainnet defaults (100 USDG an action, 250 in 24 hours) stay where nothing is set.
+- Built on exactly gage-sdk 0.6.0.
+
 ## 0.5.1
 
 - Built on exactly gage-sdk 0.5.1: a loan the private lane opened stays out of `gage_loan`, `gage_portfolio` and

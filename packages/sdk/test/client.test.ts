@@ -14,13 +14,14 @@ function recording() {
 }
 const LOOP_BUY = "/quote/loop-buy?token=0x0000000000000000000000000000000000000011&buy=1&slippageBps=50";
 
-// Leverage asks gage's valuation service for an aggregator's route (D243): on the testnet, from r7, the route of gage's
-// stand-in for KyberSwap's router (D245). Without the service it never sees one.
+// Leverage asks gage's valuation service for an aggregator's route (D243): on mainnet KyberSwap's, on the testnet, from
+// r7, the route of gage's stand-in for KyberSwap's router (D245). Without the service it never sees one.
 describe("the valuation service", () => {
-  it("is the hosted testnet's when none is named, as every other default", async () => {
+  it("is the network's own when none is named, as every other default", async () => {
     const { urls, fetch } = recording();
     await createGage({ fetch }).ctx.valuation?.raw(LOOP_BUY);
-    expect(urls).toEqual([`https://valuation-rehearsal.up.railway.app${LOOP_BUY}`]);
+    await createGage({ fetch, network: "testnet" }).ctx.valuation?.raw(LOOP_BUY);
+    expect(urls).toEqual([`https://valuation-production-2d79.up.railway.app${LOOP_BUY}`, `https://valuation-rehearsal.up.railway.app${LOOP_BUY}`]);
     expect(TESTNET_DEFAULTS.valuationUrl).toBe("https://valuation-rehearsal.up.railway.app");
   });
 
@@ -32,11 +33,13 @@ describe("the valuation service", () => {
   });
 });
 
-// Mainnet (D260): named, it is the bundled mainnet manifest and every default is mainnet's; nothing points at the testnet.
+// Mainnet (D260, D311): the default, the bundled mainnet manifest with every default mainnet's; nothing points at the
+// testnet unless it is named or a testnet manifest is given.
 describe("the network", () => {
-  it("is the testnet unless mainnet is named", () => {
-    expect(createGage().deployment.chainId).toBe(46630);
+  it("is mainnet unless the testnet is named, or a manifest says otherwise", () => {
+    expect(createGage().deployment.chainId).toBe(4663);
     expect(createGage({ network: "testnet" }).deployment.chainId).toBe(46630);
+    expect(createGage({ manifest: TESTNET_MANIFEST }).deployment.chainId).toBe(46630);
   });
 
   it("named mainnet, is Robinhood Chain with gage.cash's own services", async () => {

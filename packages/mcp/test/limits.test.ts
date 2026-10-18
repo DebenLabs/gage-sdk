@@ -25,8 +25,17 @@ describe("Valet's spend limits (D297)", () => {
       .toEqual({ borrow: { each: 1_000_000_000n, day: 0n }, deposit: { each: 100_000_000n, day: 75_000_000n } });
   });
 
-  it("refuse a setting that is not an amount of USDG, naming the setting", () => {
-    for (const bad of ["-1", "1e6", "ten", "0.1234567", "off", "1,000", "Infinity"]) {
+  it("are lifted one by one by the owner's off, on mainnet as on the testnet (D311)", () => {
+    expect(limitsFrom({ GAGE_MAX_BORROW_USDG: "off", GAGE_MAX_DEPOSIT_DAY_USDG: " OFF " }, 4663))
+      .toEqual({ borrow: { each: null, day: 250_000_000n }, deposit: { each: 100_000_000n, day: null } });
+    const all = { GAGE_MAX_BORROW_USDG: "off", GAGE_MAX_BORROW_DAY_USDG: "off", GAGE_MAX_DEPOSIT_USDG: "off", GAGE_MAX_DEPOSIT_DAY_USDG: "off" };
+    expect(limitsFrom(all, 4663)).toEqual({ borrow: { each: null, day: null }, deposit: { each: null, day: null } });
+    expect(limitsSentence(limitsFrom(all, 4663)!)).toContain("it borrows without a limit, and deposits without a limit.");
+    expect(limitsFrom({ GAGE_MAX_BORROW_USDG: "off" }, 46630)).toEqual({ borrow: { each: null, day: null }, deposit: { each: null, day: null } });
+  });
+
+  it("refuse a setting that is neither an amount of USDG nor off, naming the setting", () => {
+    for (const bad of ["-1", "1e6", "ten", "0.1234567", "none", "of", "1,000", "Infinity"]) {
       expect(() => limitsFrom({ GAGE_MAX_BORROW_DAY_USDG: bad }, 4663)).toThrow(/GAGE_MAX_BORROW_DAY_USDG/);
     }
   });
