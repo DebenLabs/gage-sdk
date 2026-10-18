@@ -1,0 +1,68 @@
+{
+  "name": "gage-sdk",
+  "version": "0.5.1",
+  "type": "module",
+  "description": "gage for builders and agents: read gage, prepare transactions, and carry them out with your own key. Robinhood Chain and its testnet.",
+  "license": "MIT",
+  "homepage": "https://docs.gage.cash/ai-agents/sdk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DebenLabs/gage-sdk.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/DebenLabs/gage-sdk/issues"
+  },
+  "keywords": [
+    "gage",
+    "robinhood-chain",
+    "lending",
+    "agents",
+    "viem",
+    "sdk"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "sync-deployment": "node scripts/sync-deployment.mjs",
+    "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "zod": "^4.5.4"
+  },
+  "peerDependencies": {
+    "viem": "^2.56.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "eslint": "^9.39.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.69.0",
+    "viem": "2.56.3",
+    "vitest": "^4.1.11"
+  }
+}

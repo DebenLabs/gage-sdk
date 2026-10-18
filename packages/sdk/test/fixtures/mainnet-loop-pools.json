@@ -1,0 +1,165 @@
+{
+  "_trimmedFrom": "origin/main launch/live/4663.json (13 October 2026): every pool row of MSTR, AMC and RDDT",
+  "chainId": 4663,
+  "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "nativeV2": {
+    "assets": [
+      {
+        "token": "0xec262a75e413fafd0df80480274532c79d42da09",
+        "symbol": "MSTR",
+        "name": "Strategy Inc. • Robinhood Token",
+        "decimals": 18,
+        "lane": "STOCK"
+      },
+      {
+        "token": "0x05a3d1cd21d0c88145e82600e62e7e496e0f222b",
+        "symbol": "AMC",
+        "name": "AMC Entertainment • Robinhood Token",
+        "decimals": 18,
+        "lane": "STOCK"
+      },
+      {
+        "token": "0x05b37fb53a299a1b874a619e1c4c404d52c36f4c",
+        "symbol": "RDDT",
+        "name": "Reddit • Robinhood Token",
+        "decimals": 18,
+        "lane": "STOCK"
+      }
+    ],
+    "routingPools": [
+      {
+        "protocol": "v3",
+        "poolAddress": "0x17578c0e0d15da44f31677263114f71ae76653ea",
+        "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+        "currency0": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "currency1": "0xec262a75e413fafd0df80480274532c79d42da09",
+        "fee": 10000,
+        "tickSpacing": 200,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x00000000000000000000000017578c0e0d15da44f31677263114f71ae76653ea",
+        "createdAt": 1782404935,
+        "createdBlock": 199920,
+        "name": "USDG / MSTR v3 1%"
+      },
+      {
+        "protocol": "v3",
+        "poolAddress": "0xaa34fea710a1a737840329051d81d3b0b7c564d5",
+        "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+        "currency0": "0x05a3d1cd21d0c88145e82600e62e7e496e0f222b",
+        "currency1": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x000000000000000000000000aa34fea710a1a737840329051d81d3b0b7c564d5",
+        "createdAt": 1788185636,
+        "createdBlock": 50927257,
+        "name": "USDG / AMC v3 0.3%"
+      },
+      {
+        "currency0": "0x05b37fb53a299a1b874a619e1c4c404d52c36f4c",
+        "currency1": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "fee": 10000,
+        "tickSpacing": 200,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x000000000000000000000000a8744e76aed23b05f0126335e7bd38f7935d19fe",
+        "createdAt": 1782404971,
+        "createdBlock": 199988,
+        "protocol": "v3",
+        "poolAddress": "0xa8744e76aed23b05f0126335e7bd38f7935d19fe",
+        "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+        "name": "RDDT / USDG v3 1%"
+      }
+    ],
+    "cashoutPools": [
+      {
+        "protocol": "v3",
+        "poolAddress": "0x055036f511567711e0b2e127a1a468802bb93065",
+        "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+        "currency0": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+        "currency1": "0xec262a75e413fafd0df80480274532c79d42da09",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x000000000000000000000000055036f511567711e0b2e127a1a468802bb93065",
+        "name": "MSTR / WETH v3 0.3%"
+      },
+      {
+        "currency0": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "currency1": "0xec262a75e413fafd0df80480274532c79d42da09",
+        "fee": 2500,
+        "tickSpacing": 25,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x319bac87e616a89e241c10aeb8afd4892a852cdd8b373cd9765ecddc40b87cfe",
+        "name": "MSTR / USDG v4 0.25%"
+      },
+      {
+        "currency0": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "currency1": "0xec262a75e413fafd0df80480274532c79d42da09",
+        "fee": 2400,
+        "tickSpacing": 24,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0xc105b8300ff65d750a0e4e63c7a879e20504069b770713464a5315e797735326",
+        "name": "MSTR / USDG v4 0.24%"
+      },
+      {
+        "currency0": "0x05a3d1cd21d0c88145e82600e62e7e496e0f222b",
+        "currency1": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "fee": 1000,
+        "tickSpacing": 10,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x7499938c352d5b5b8f0c648722aca5ee964ef9b85c3a3041f1ec379726291d9d",
+        "name": "AMC / USDG v4 0.1%"
+      },
+      {
+        "currency0": "0x05b37fb53a299a1b874a619e1c4c404d52c36f4c",
+        "currency1": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "fee": 2900,
+        "tickSpacing": 29,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x7c2985fd7623a5dcd88c7d51099931ca295875743b96bc64990e374f49e5f387",
+        "name": "RDDT / USDG v4 0.29%"
+      }
+    ]
+  },
+  "pools": {
+    "mstrUsdgV3": {
+      "protocol": "v3",
+      "poolAddress": "0x17578c0e0d15da44f31677263114f71ae76653ea",
+      "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+      "currency0": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+      "currency1": "0xec262a75e413fafd0df80480274532c79d42da09",
+      "fee": 10000,
+      "tickSpacing": 200,
+      "hooks": "0x0000000000000000000000000000000000000000",
+      "poolId": "0x00000000000000000000000017578c0e0d15da44f31677263114f71ae76653ea",
+      "createdAt": 1782404935,
+      "createdBlock": 199920
+    },
+    "amcUsdgV3": {
+      "protocol": "v3",
+      "poolAddress": "0xaa34fea710a1a737840329051d81d3b0b7c564d5",
+      "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+      "currency0": "0x05a3d1cd21d0c88145e82600e62e7e496e0f222b",
+      "currency1": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+      "fee": 3000,
+      "tickSpacing": 60,
+      "hooks": "0x0000000000000000000000000000000000000000",
+      "poolId": "0x000000000000000000000000aa34fea710a1a737840329051d81d3b0b7c564d5",
+      "createdAt": 1788185636,
+      "createdBlock": 50927257
+    },
+    "rddtUsdgV3": {
+      "currency0": "0x05b37fb53a299a1b874a619e1c4c404d52c36f4c",
+      "currency1": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+      "fee": 10000,
+      "tickSpacing": 200,
+      "hooks": "0x0000000000000000000000000000000000000000",
+      "poolId": "0x000000000000000000000000a8744e76aed23b05f0126335e7bd38f7935d19fe",
+      "createdAt": 1782404971,
+      "createdBlock": 199988,
+      "protocol": "v3",
+      "poolAddress": "0xa8744e76aed23b05f0126335e7bd38f7935d19fe",
+      "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "gage-sdk-repository",
+  "private": true,
+  "description": "gage-sdk and gage-mcp: the TypeScript SDK and the MCP server for gage on Robinhood Chain",
+  "license": "MIT",
+  "packageManager": "pnpm@9.14.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  },
+  "pnpm": {
+    "overrides": {
+      "ws@8.18.0": "8.21.0"
+    }
+  }
+}
