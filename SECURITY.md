@@ -18,7 +18,7 @@ another user can read, or text from gage's services, an index or the chain that 
 
 ## Supported versions
 
-The latest release. Versions before 0.5.0 are deprecated on npm.
+The latest release. Versions before 0.6.0 are deprecated on npm.
 
 ## Testing
 
