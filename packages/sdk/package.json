@@ -46,7 +46,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src test",
+    "lint": "eslint src test examples",
     "test": "vitest run",
     "sync-deployment": "node scripts/sync-deployment.mjs",
     "prepack": "pnpm run build"

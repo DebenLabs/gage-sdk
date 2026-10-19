@@ -16,7 +16,8 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "outDir": "dist",
-    "rootDir": "."
+    "rootDir": ".",
+    "paths": { "gage-sdk": ["./src/index.ts"], "gage-sdk/testing": ["./src/testing.ts"] }
   },
-  "include": ["src", "test", "eslint.config.js", "vitest.config.ts"]
+  "include": ["src", "test", "examples", "eslint.config.js", "vitest.config.ts"]
 }
