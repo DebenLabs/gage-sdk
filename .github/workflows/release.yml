@@ -2,10 +2,17 @@ name: release
 
 # A tag vX.Y.Z publishes gage-sdk and gage-mcp X.Y.Z to npm from this repository, with provenance. It uses npm's trusted
 # publishing, so no token is stored here: on npmjs.com each package names this repository, this workflow and the `npm`
-# environment as its publisher, and the `npm` environment waits for a maintainer's approval.
+# environment as its publisher, and the `npm` environment waits for a maintainer's approval. A version npm already has is
+# skipped, so a release that published one package and failed on the other is finished by running this workflow again
+# by hand on the tag's commit (`version`, X.Y.Z): gage-mcp 0.7.0 failed on Sigstore's 409 after gage-sdk 0.7.0 published.
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "X.Y.Z, both packages' version: publishes what npm does not have yet"
+        required: true
 
 permissions:
   contents: read
@@ -33,7 +40,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: The tag is both packages' version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
           for p in sdk mcp; do
             v=$(node -p "require('./packages/$p/package.json').version")
@@ -49,5 +56,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/packed"
           pnpm -C packages/sdk pack --pack-destination "$RUNNER_TEMP/packed"
           pnpm -C packages/mcp pack --pack-destination "$RUNNER_TEMP/packed"
-      - run: npm publish "$RUNNER_TEMP"/packed/gage-sdk-*.tgz --access public --provenance
-      - run: npm publish "$RUNNER_TEMP"/packed/gage-mcp-*.tgz --access public --provenance
+      - name: Publish what npm does not have yet
+        run: |
+          for p in sdk mcp; do
+            v=$(node -p "require('./packages/$p/package.json').version")
+            if [ "$(npm view "gage-$p@$v" version 2>/dev/null)" = "$v" ]; then echo "gage-$p@$v is on npm already"; continue; fi
+            npm publish "$RUNNER_TEMP"/packed/gage-$p-*.tgz --access public --provenance
+          done
