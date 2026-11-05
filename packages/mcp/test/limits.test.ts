@@ -129,8 +129,78 @@ describe("Valet's spend limits (D297)", () => {
     for (const action of ["reclaim", "cash_out", "earn_redeem", "cancel", "collect", "auto_roll", "cancel_auto_roll"]) await (await limit({ action } as unknown as View)).release(true);
     await (await limit(borrow(5_000, NVDA))).release(true);
     await (await limit(deposit(5_000, NVDA))).release(true);
+    // A loop or a put in a lend asset borrows that asset; closing or leaving a put to roll moves no USDG of a loan.
+    const lent = { asset: { token: NVDA, symbol: "NVDA", decimals: 18 } };
+    for (const view of [{ action: "leverage", principal: usd(5_000), ...lent }, { action: "put_open", principal: "5000000000000000000", ...lent },
+      { action: "put_roll", principal: "5000000000000000000", oldPrincipal: "5000000000000000000", ...lent }, { action: "put_close" }, { action: "put_auto_roll" }, { action: "put_cancel_auto_roll" }]) {
+      await (await limit(view as unknown as View)).release(true);
+    }
     expect(ledger.used("borrow") + ledger.used("deposit")).toBe(0n);
     expect(await code(() => limit(borrow(1)))).toBe("SPEND_LIMIT");
+    expect(await code(() => limit(loop(1)))).toBe("SPEND_LIMIT");
+  });
+
+  // The LP lane (docs/api.md "LP lane") lends and takes USDG alone: an LP loan borrows its principal, an LP vault's
+  // deposit puts its amount in; repaying, taking a position back, collecting, withdrawing, redeeming and claiming do not.
+  it("count an LP loan by its principal and an LP vault's deposit by its amount, and leave the lane's other actions free", async () => {
+    const ledger = new Ledger(dir());
+    const limit = spendLimit(MAINNET_LIMITS, ledger, USDG);
+    const lpBorrow = (n: number) => ({ action: "lp_borrow", principal: usd(n) }) as unknown as View;
+    const lpDeposit = (n: number) => ({ action: "lp_deposit", amount: usd(n) }) as unknown as View;
+    await expect(Promise.resolve().then(() => limit(lpBorrow(150)))).rejects.toThrow("This LP loan borrows 150 USDG: this wallet may borrow at most 100 USDG a loan or loop (GAGE_MAX_BORROW_USDG)");
+    expect(await code(() => limit(lpDeposit(101)))).toBe("SPEND_LIMIT");
+    await (await limit(lpBorrow(100))).release(true);
+    await (await limit(borrow(100))).release(true);
+    expect(ledger.used("borrow")).toBe(200_000_000n);
+    expect(await code(() => limit(lpBorrow(60)))).toBe("SPEND_LIMIT_DAY");
+    await (await limit(lpDeposit(40))).release(true);
+    expect(ledger.used("deposit")).toBe(40_000_000n);
+    // A borrow planned once its loan is open answers lp_withdraw's view: nothing new is borrowed, so nothing counts.
+    // Wrapping Fables receipts, or unwrapping a position, moves no USDG.
+    for (const action of ["lp_repay", "lp_return_position", "lp_collect", "lp_withdraw", "lp_redeem", "lp_claim_bonus", "lp_wrap", "lp_unwrap", "lp_create_vault", "lp_vault_add_pool", "lp_vault_remove_pool"]) {
+      await (await limit({ action, principal: usd(5_000), amount: usd(5_000) } as unknown as View)).release(true);
+    }
+    expect(ledger.used("borrow")).toBe(200_000_000n);
+    expect(ledger.used("deposit")).toBe(40_000_000n);
+  });
+
+  // A park (D334) deposits what an out-of-range position held into a partner vault: a USDG one counts as a deposit, a
+  // lend asset's does not, as a deposit in it does not; an unpark withdraws into the wallet's own new position.
+  it("count a park's USDG as a deposit, and leave a lend asset's park and every unpark free", async () => {
+    const ledger = new Ledger(dir());
+    const limit = spendLimit(MAINNET_LIMITS, ledger, USDG);
+    const park = (n: number, token: Address = USDG) => ({ action: "park", token, symbol: "USDG", decimals: 6, amount: usd(n) }) as unknown as View;
+    await expect(Promise.resolve().then(() => limit(park(150)))).rejects.toThrow("This park deposits 150 USDG: this wallet may deposit at most 100 USDG at a time (GAGE_MAX_DEPOSIT_USDG)");
+    await (await limit(park(60))).release(true);
+    await (await limit(park(5_000, "0x2b4066a52F7A844d810f402c21B3543c62BcD18c"))).release(true);
+    await (await limit({ action: "unpark", amount: usd(5_000) } as unknown as View)).release(true);
+    expect(ledger.used("deposit")).toBe(60_000_000n);
+  });
+
+  // A partner vault's exit now (Intent D57) commits shares the desk redeems for the wallet; listing its next loan,
+  // cancelling it and collecting what its sales paid move nothing out: money comes back.
+  it("leave a partner vault's exit now, its next listing, its cancel and its collect free", async () => {
+    const ledger = new Ledger(dir());
+    const limit = spendLimit(MAINNET_LIMITS, ledger, USDG);
+    for (const action of ["earn_exit_now", "earn_exit_list", "earn_exit_cancel", "earn_exit_collect"]) {
+      await (await limit({ action, assets: usd(5_000), need: usd(5_000), shares: usd(5_000) } as unknown as View)).release(true);
+    }
+    expect(ledger.used("borrow")).toBe(0n);
+    expect(ledger.used("deposit")).toBe(0n);
+  });
+
+  // An LP roll (D317) is a roll: it counts what the new loan borrows beyond the one it repays, never the old principal again.
+  it("count an LP roll only for what its new loan borrows beyond the one it repays", async () => {
+    const ledger = new Ledger(dir());
+    const limit = spendLimit(MAINNET_LIMITS, ledger, USDG);
+    const lpRoll = (old: number, now: number) => ({ action: "lp_roll", oldPrincipal: usd(old), principal: usd(now) }) as unknown as View;
+    await (await limit(lpRoll(5_000, 4_990))).release(true);
+    await (await limit(lpRoll(5_000, 5_000))).release(true);
+    expect(ledger.used("borrow")).toBe(0n);
+    await (await limit(lpRoll(5_000, 5_040))).release(true);
+    expect(ledger.used("borrow")).toBe(40_000_000n);
+    await expect(Promise.resolve().then(() => limit(lpRoll(1_000, 1_101)))).rejects.toThrow("This LP roll borrows a further 101 USDG: this wallet may borrow at most 100 USDG a loan or loop (GAGE_MAX_BORROW_USDG)");
+    expect(ledger.used("borrow")).toBe(40_000_000n);
   });
 
   it("count a roll only for what it borrows beyond the loan it repays (the founder, 18 October 2026)", async () => {
@@ -150,7 +220,7 @@ describe("Valet's spend limits (D297)", () => {
 
   it("say in one sentence what they hold and what they leave free, as notLimited lists it", () => {
     expect(limitsSentence(MAINNET_LIMITS)).toBe("it borrows at most 100 USDG a loan or loop and 250 USDG in any 24 hours, and deposits at most 100 USDG at a time and 250 USDG in any 24 hours. "
-      + "Repaying, cashing out, rolling a loan over at the same size, leaving a loan to roll by itself or ending that, withdrawing, cancelling, collecting and rating gage are not limited, nor are actions in an asset other than USDG.");
+      + "Repaying (an LP loan too), taking an LP position back, cashing out, rolling a loan over at the same size (an LP loan to one no larger), leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools and rating gage are not limited, nor are actions in an asset other than USDG.");
   });
 
   it("say what each limit is and what is left of it, as raw USDG", async () => {
@@ -160,7 +230,12 @@ describe("Valet's spend limits (D297)", () => {
       asset: { token: USDG, symbol: "USDG", decimals: 6 },
       borrow: { perAction: "100000000", per24Hours: "250000000", used: "0", left: "250000000" },
       deposit: { perAction: "100000000", per24Hours: "250000000", used: "40000000", left: "210000000" },
-      notLimited: ["reclaim", "cash_out", "roll (a loan of the same size)", "auto_roll", "cancel_auto_roll", "earn_redeem", "cancel", "collect", "feedback", "actions in an asset other than USDG"],
+      notLimited: [
+        "reclaim", "cash_out", "roll (a loan of the same size)", "auto_roll", "cancel_auto_roll", "earn_redeem", "cancel", "collect", "feedback",
+        "lp_repay", "lp_roll (to a loan no larger)", "lp_return_position", "lp_collect", "lp_withdraw", "lp_redeem", "lp_claim_bonus", "lp_wrap", "lp_unwrap",
+        "lp_create_vault", "lp_vault_add_pool", "lp_vault_remove_pool", "unpark", "rehypo_exit_now", "earn_exit_now", "earn_exit_list", "earn_exit_cancel",
+        "earn_exit_collect", "actions in an asset other than USDG",
+      ],
     });
     expect(limitsOf({ borrow: { each: null, day: null }, deposit: { each: 5n, day: null } }, ledger, USDG).borrow).toEqual({ perAction: null, per24Hours: null, used: "0", left: null });
     expect([usdgText(100_000_000n), usdgText(20_500_000n), usdgText(1n), usdgText(0n)]).toEqual(["100", "20.5", "0.000001", "0"]);

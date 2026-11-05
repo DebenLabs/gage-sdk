@@ -45,9 +45,13 @@ export const tokenUp = (raw: bigint, decimals: number, symbol: string) => {
 };
 export const shares = (raw: bigint) => `${units(raw, 18, 4)} share${raw === 10n ** 18n ? "" : "s"}`;
 export const bps = (value: number) => `${(value / 100).toFixed(value % 100 === 0 ? 0 : 2)}%`;
+/** A cost in tenths of a basis point, to its last tenth: `bps` where it is whole basis points. */
+export const bpsTenths = (tenths: number) => (tenths % 10 === 0 ? bps(tenths / 10) : `${(tenths / 1000).toFixed(3)}%`);
 export const days = (seconds: number) => {
   const d = seconds / 86_400;
-  return Number.isInteger(d) ? `${d} day${d === 1 ? "" : "s"}` : `${(seconds / 3600).toFixed(0)} hours`;
+  if (Number.isInteger(d)) return `${d} day${d === 1 ? "" : "s"}`;
+  const h = Math.round(seconds / 3600);
+  return `${h} hour${h === 1 ? "" : "s"}`;
 };
 export const date = (unix: number) => new Date(unix * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
 export const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;

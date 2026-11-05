@@ -17,8 +17,14 @@ export interface Terms { token: Address; collateral: bigint; principal: bigint; 
 export type Allocation = { vault: Address; units: number };
 /** `step`: refused only because the purchase would open the vault's record under the smallest one (Pashov I-04,
  * `PURCHASE_TOO_SMALL`, the rates service's last check): the vault passes through it to a larger count, never ends on it. */
-interface VaultOption { units: number; principal: bigint; executionFee: bigint; step?: true }
-interface VaultReading { vault: Address; options: VaultOption[]; loanPrincipal: bigint; totalAssets: bigint }
+export interface VaultOption { units: number; principal: bigint; executionFee: bigint; step?: true }
+/**
+ * One vault of a funding preview: the options it takes, in units, and its book (`allocate` hands the units out);
+ * `floorTenths`, the lowest cost its floors take at this reading's cost, tenths of a basis point, where the service says it.
+ */
+export interface VaultReading { vault: Address; options: VaultOption[]; loanPrincipal: bigint; totalAssets: bigint; floorTenths?: number }
+/** A vault's refusals by its floors, as the rates service names them. */
+const FLOOR_CODES: ReadonlySet<string> = new Set(["BELOW_RETURN_FLOOR", "BELOW_VAULT_REGISTRY_FLOOR"]);
 
 /**
  * The rates service's refusals gage-sdk passes on, in its own words (docs/api.md, the Intent routes). Neither another
@@ -44,6 +50,7 @@ const REFUSALS: Record<string, string> = {
   PRICING_UNAVAILABLE: "gage's rates model cannot price this now; try again shortly",
   PRINCIPAL_TOO_SMALL: "The loan is smaller than the partner vaults fund; borrow more",
   PURCHASE_TOO_SMALL: "A vault's part of this loan would be under its smallest",
+  PUT_CLOSED: "Puts do not close or roll on this loan's core",
   RETURN_ABOVE_PRINCIPAL: "The loan would cost more than it lends",
   ROLLOVER_CLOSED: "Rolling over is not offered for this loan's core",
   ROUTER_NOT_ADMITTED: "gage's router is not admitted to fill this loan now",
@@ -77,6 +84,8 @@ const previewSchema = z.object({
   vaults: z.array(z.object({
     vault: address, loanPrincipal: digits, totalAssets: digits,
     options: z.array(z.object({ units: z.number().int().min(1).max(4), principal: digits, executionFee: digits, refusal: refusal.nullable() }).loose()),
+    // The quarters it takes now, why it takes none, and its floor at this cost in tenths of a basis point (D384).
+    maxUnits: z.number().int().min(0).max(4).optional(), refusal: refusal.nullable().optional(), floorTenths: z.number().int().min(0).optional(),
   }).loose()).optional(),
   summary: z.object({
     units: z.number().int(), fills: z.boolean(), reason: z.string().nullable(),
@@ -84,8 +93,8 @@ const previewSchema = z.object({
     // and the largest principal at which they take the loan whole (docs/api.md, "Intent funding preview").
     accepts: z.boolean().optional(), acceptFloorTenths: z.number().int().nullable().optional(), acceptMaxPrincipal: digits.nullable().optional(),
   }).loose().nullable(),
-  /** The model's cost of these exact terms (`purpose=comparison`), which the vaults' floors read. */
-  pricing: z.object({ costBps: z.number().int() }).loose().nullable().optional(),
+  /** The model's cost of these exact terms (`purpose=comparison`), which the vaults' floors read, and until when it holds. */
+  pricing: z.object({ costBps: z.number().int(), expiresAt: z.number().int().optional() }).loose().nullable().optional(),
 }).loose();
 
 /** What the vaults could take of these exact terms, at one block; `fills` when all four quarters are taken. */
@@ -106,13 +115,31 @@ export async function preview(rates: Upstream, engine: Address, t: Terms, borrow
       accepted += 1;
     }
     if (accepted === 0) options.length = 0;
-    return { vault: v.vault as Address, options, loanPrincipal: BigInt(v.loanPrincipal), totalAssets: BigInt(v.totalAssets) };
+    return { vault: v.vault as Address, options, loanPrincipal: BigInt(v.loanPrincipal), totalAssets: BigInt(v.totalAssets), ...(v.floorTenths !== undefined ? { floorTenths: v.floorTenths } : {}) };
   });
+  // The Loan grade ladder's vaults, as the borrow card counts them (D189): those taking quarters now, and those held back by
+  // their floor alone, which a higher cost would bring in. Null from a service that names no floors.
+  const listed = p.vaults ?? [];
+  const floors = listed.length > 0 && listed.every((v) => v.floorTenths !== undefined && v.maxUnits !== undefined)
+    ? listed.filter((v) => v.maxUnits! > 0 || FLOOR_CODES.has(v.refusal?.code ?? "")).map((v) => v.floorTenths!) : null;
   return {
-    fills: Boolean(p.summary?.fills), units: p.summary?.units ?? 0, reason: p.summary?.reason ?? null, vaults,
+    fills: Boolean(p.summary?.fills), units: p.summary?.units ?? 0, reason: p.summary?.reason ?? null, vaults, floors,
     accepts: p.summary?.accepts ?? null, acceptFloorTenths: p.summary?.acceptFloorTenths ?? null,
     acceptMaxPrincipal: p.summary?.acceptMaxPrincipal ? BigInt(p.summary.acceptMaxPrincipal) : null, modelBps: p.pricing?.costBps ?? null,
+    expiresAt: p.pricing?.expiresAt ?? null,
   };
+}
+
+/**
+ * The lowest cost, tenths of a basis point, at which the vaults funding a reading could still take all four quarters
+ * between them (D384): the cheapest floors first, each vault keeping the quarters it takes at the reading's cost, until
+ * `allocate` hands them out whole. Null when no funding vault's floor is read, or they cannot take them all.
+ */
+export function cheapestWhole(vaults: readonly VaultReading[]): number | null {
+  const priced = vaults.filter((v) => v.options.length > 0 && v.floorTenths !== undefined)
+    .sort((a, b) => a.floorTenths! - b.floorTenths! || (BigInt(a.vault) < BigInt(b.vault) ? -1 : 1));
+  for (let n = 1; n <= priced.length; n += 1) if (allocate(priced.slice(0, n))) return priced[n - 1]!.floorTenths!;
+  return null;
 }
 
 const point = z.object({ principalRaw: digits, repaymentRaw: digits, costBps: z.number().int().min(0).max(5_000) }).loose();
@@ -220,7 +247,7 @@ export async function instant(rates: Upstream, engine: Address, token: Address, 
   if (collateral <= 0n || collateral > wallet) throw new ApiError("RATES_UNAVAILABLE", "The rates service answered a pledge outside the one asked about", 503);
   return {
     collateral, valueUSDG: BigInt(a.valueUSDG), principal: BigInt(a.principal), cap: BigInt(a.cap),
-    costBps: a.costBps, ltvBps: a.ltvBps, vaults: a.vaults, expiresAt: r.expiresAt,
+    costBps: a.costBps, suggestedBps: a.suggestedBps ?? null, ltvBps: a.ltvBps, vaults: a.vaults, expiresAt: r.expiresAt,
   };
 }
 
@@ -314,10 +341,14 @@ export interface RollTerms { principal: bigint; cap: bigint; term: number }
 export interface RollWallet { feeBps: number; fee: bigint; payout: bigint; repayment: bigint; topUp: bigint; surplus: bigint }
 export interface SignedRoll { plans: SignedPlan["plan"][]; signatures: Hex[]; pricing: Hex; expiresAt: number; terms: RollTerms; wallet: RollWallet }
 
-/** What a roll asks the rates service: the loan, its holder and the new loan's term; `principal` is always the old one's. */
-interface RollAsk { engine: Address; loanId: bigint; borrower: Address; term: number; count?: number }
+/**
+ * What a roll asks the rates service: the loan, its holder and the new loan's term; `principal` is always the old one's.
+ * `put`: plans for the generation's put router, which buys what the new payout leaves short with the pledge's token
+ * (`router=put`, docs/api.md "Puts on lend-asset generations"), rather than its rollover router.
+ */
+interface RollAsk { engine: Address; loanId: bigint; borrower: Address; term: number; count?: number; put?: boolean }
 const rollPath = (a: RollAsk) =>
-  `/intent/roll/quotes/${a.engine.toLowerCase()}?loan=${a.loanId}&borrower=${a.borrower.toLowerCase()}&term=${a.term}&count=${a.count ?? 3}`;
+  `/intent/roll/quotes/${a.engine.toLowerCase()}?loan=${a.loanId}&borrower=${a.borrower.toLowerCase()}&term=${a.term}&count=${a.count ?? 3}${a.put ? "&router=put" : ""}`;
 
 /**
  * The wallet's part, held to the loan as the app holds it: the payout is the principal less the core's fee, rounded down
@@ -349,9 +380,10 @@ export async function rollFigures(rates: Upstream, a: RollAsk & { oldPrincipal: 
 
 /**
  * The roll's signed plans, checked field by field before anything is sent, as the app checks them: each for the loan's
- * core and named to its generation's router, on the old pledge to the unit, all on the same terms (the old principal)
- * for the core's next ids in a row, bound to the borrower (`evidence = keccak256(abi.encode(borrower, pricing))`, as
- * `RolloverRouter.evidenceFor`), and alive. PRICING_EXPIRED is asked again a few seconds on, as the app does.
+ * core and named to its generation's router (its put router for a put), on the old pledge to the unit, all on the same
+ * terms (the old principal) for the core's next ids in a row, bound to the borrower (`evidence =
+ * keccak256(abi.encode(borrower, pricing))`, as `RolloverRouter.evidenceFor` and `PutRouter.evidenceFor`), and alive.
+ * PRICING_EXPIRED is asked again a few seconds on, as the app does.
  */
 export async function rollPlan(
   rates: Upstream, a: RollAsk & { router: Address; token: Address; collateral: bigint; oldPrincipal: bigint; oldCap: bigint; now: () => number },

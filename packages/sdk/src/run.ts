@@ -8,6 +8,7 @@
  */
 import type { Address, Hex } from "viem";
 import { ApiError, refusalOf, requireThat } from "./errors.js";
+import { capped } from "./gas.js";
 import { plan, rateNote, type Ctx, type Made, type Step, type Summary, type Tx, type View } from "./plans.js";
 import type { ActionInput } from "./schemas.js";
 import type { Signer } from "./signer.js";
@@ -56,8 +57,11 @@ export interface RunOptions {
   limit?: SpendLimit;
 }
 
-/** Gas above the estimate, as wallets add it, and what a step adds for a call whose estimate runs short. */
-const headroom = (gas: bigint, step?: Step) => (gas * 12n) / 10n + (step?.extraGas ?? 0n);
+/**
+ * Gas above the estimate, as wallets add it, and what a step adds for a call whose estimate runs short (a partner vault's
+ * floor for each open reward record, src/gas.ts), held to what the chain takes in one transaction.
+ */
+const headroom = (gas: bigint, step?: Step) => capped((gas * 12n) / 10n + (step?.extraGas ?? 0n), gas);
 /** How many times a plan whose steps come first is planned again (a vault's settle, then the deposit). */
 const REPLANS = 2;
 /**
@@ -110,7 +114,16 @@ export async function run(c: Ctx, input: ActionInput, signer: Signer, options: R
     unsent: p.steps.slice(sent.length - from + (doubtful ? 1 : 0)).map((s) => s.label), error, loan,
   });
   if (!p.steps.length) return answer("nothing_to_do");
-  const hold = options.limit ? await options.limit(p.view) : null;
+  // The limit is asked with the plan, and again with a plan planned again whose view is another action's: a borrow
+  // against Fables receipts wraps them first (lp_wrap's view), and its loan is planned, and limited, once that is mined.
+  const holds: Hold[] = [];
+  let asked: string | null = null;
+  const ask = async () => {
+    if (!options.limit || p.view.action === asked) return;
+    holds.push(await options.limit(p.view));
+    asked = p.view.action;
+  };
+  await ask();
   // Whether the action itself went out: from the moment it is handed to the signer, unless the chain says it reverted.
   let spent = false;
   // One step: built, simulated and sent, then waited for; a RunResult when the run stops there.
@@ -163,8 +176,9 @@ export async function run(c: Ctx, input: ActionInput, signer: Signer, options: R
       try { p = await plan(c, input); } catch (error) { return answer("stopped", refusalOf(error)); }
       from = sent.length;
       if (!p.steps.length) return answer("done");
+      try { await ask(); } catch (error) { return answer("stopped", refusalOf(error)); }
     }
   } finally {
-    await hold?.release(spent);
+    for (const hold of holds) await hold.release(spent);
   }
 }

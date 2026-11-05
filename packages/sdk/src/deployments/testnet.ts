@@ -3,6 +3,7 @@
 export const TESTNET_MANIFEST = {
   "chainId": 46630,
   "USDG": "0x445b73572C94287D0334375E4589A5d9EEd81b7f",
+  "WETH": "0x7943e237c7F95DA44E0301572D358911207852Fa",
   "StateView": "0x780190f07C7847C7b87B998Ee14455BABA6e8618",
   "nativeV2": {
     "engines": [
@@ -131,6 +132,76 @@ export const TESTNET_MANIFEST = {
         "rewards": "0x58dE6e29A1AD5a1A63dd2016a2d3Bd7D839Be8b7",
         "name": "Mainnet dress rehearsal, r9 (Pashov final fixes, I-04 tenth-unit floor)",
         "cashoutRouter": "0x37e8f360314d05f0bf8a2c9a26bfad33c31b6d03"
+      },
+      {
+        "engine": "0xc0a724a79c8fb78b2589d70e0e2718bd0b306fc4",
+        "registry": "0x1b7fe4dd005dbd714f5c263f57c0b3f7bf1955d9",
+        "rewards": "0x8DE457472905B47683c5106ecC62aA0E7C68ff2F",
+        "name": "Mainnet dress rehearsal, r10 (native ERC-4626 vaults)",
+        "cashoutRouter": "0xb58d720da1ec430b05d7a19325eae662d3e8cc26"
+      },
+      {
+        "engine": "0xd0cf3df12de33cd54600b38479cb01c6b83515d6",
+        "registry": "0xe95c9c2c911ce3b0131ee86bbb8a3a350676f946",
+        "rewards": "0x5cA0338d26ffB9D21B7542C1C0525E41fD7d5E92",
+        "name": "Mainnet dress rehearsal, r11 (exposure-split recovery, private lane)",
+        "cashoutRouter": "0xbf39cb79833f17fe2d4011294f6d61f894bf50a4"
+      },
+      {
+        "engine": "0x11d8edde4d0f2784e3d6aedf3d27a820d4686bf0",
+        "registry": "0xfed753a23e75349de5d4af4c7baa1421ab087df5",
+        "rewards": "0x626358b40e4f55c0B34d5c6bC48511E55b1789aC",
+        "name": "Mainnet dress rehearsal, r12 (loss-share recovery, ERC-4626 conformance)",
+        "cashoutRouter": "0x318e128486c3b7a989eb713a38535d6f9b9351b0"
+      },
+      {
+        "engine": "0xb7b880de04111ba65aeefd7de0561860f4177766",
+        "registry": "0x8040b07aa474a97b8b00d97e6df376a4eef6bdf6",
+        "rewards": "0x556F1912147117098B25f3321da2f27f23701dfa",
+        "name": "Mainnet dress rehearsal, r13 (exit now: the exit desk, falling-price sales)",
+        "cashoutRouter": "0x6831bf66fd9478e09d5dc110a7787c1fd26be416"
+      },
+      {
+        "engine": "0x35a03f2554f6f927c22ac3be7b485b91591d8232",
+        "registry": "0x64e6d91135973f6941b78a956cf7b540d2c182eb",
+        "rewards": "0x86aa75A00771add0e900639018A47a9281aE8652",
+        "name": "Mainnet dress rehearsal, r13b (r13 with the 1-day keeper entries, D238)",
+        "cashoutRouter": "0x61e16a344848eff3381ba873088254a7e0770ca8"
+      },
+      {
+        "engine": "0xa81e876ef7f03cd58a42848cdbc7508835ccc443",
+        "registry": "0x3c7e6ba9f52e191dfcb7fa27d6eb0689b5fee677",
+        "rewards": "0x8ab6fb190FAFeA4eF0AE593b6430B46a80d1d46a",
+        "name": "Mainnet dress rehearsal, r13c (r13b on the core without the dead sources, #916)",
+        "cashoutRouter": "0x45c96de744efdecd314703c10b716128bf350c43"
+      },
+      {
+        "engine": "0xf30c76e1ba4357a56a2922cab8206347f598a68f",
+        "registry": "0xde3065c053c3145703c8ded85c2f507c30468fb4",
+        "rewards": "0x193F4490849Ce604A3156B3E30203c297a86dE02",
+        "name": "Mainnet dress rehearsal, r13d (r13c with the settle-first exit desk, #937)",
+        "cashoutRouter": "0x0e2f5a15f31abb91ea9a317e66f85525a9970422"
+      },
+      {
+        "engine": "0xa35c0f6aedd564f54a8ea0b1b79d2417d8349963",
+        "registry": "0x59f5d376d7156f271443af97eb055bfbc535a6c4",
+        "rewards": "0x0271Aa640777D728066d519F25C5DE825eeC3486",
+        "name": "Mainnet dress rehearsal, r13e (r13d with the SEC-01 exit desk and views, D391)",
+        "cashoutRouter": "0x70b385a0f77f368925b6c3c58ab199f5b1fd97e6"
+      },
+      {
+        "engine": "0x4f83d5e247122653b19384389b3b47de3351eebd",
+        "registry": "0x0696baa34ecca96c60ff8bc7aa296cbddd00c03e",
+        "rewards": "0x05f1eCF43998177B4B725E6D3ED94F4DDA0c7972",
+        "name": "Testnet r14 (r13e with the next exit desk, D393 to D395)",
+        "cashoutRouter": "0x32dc45f7dfcb2b58c1a5135f5f704da264bbed48"
+      },
+      {
+        "engine": "0xb3751229acc969e3778861b99b677d2e86b7937f",
+        "registry": "0x9d3537d52630330eb4d012c2a6de2cd745ace33b",
+        "rewards": "0xEE0cE582C54e0b9EF7A6f4747a8252b51e15f0B2",
+        "name": "Testnet r15 (r14 with #998's core, D417)",
+        "cashoutRouter": "0xd242f663558b36ddb43d78afc16cb315e636411b"
       }
     ],
     "assets": [
@@ -271,14 +342,24 @@ export const TESTNET_MANIFEST = {
         "tickSpacing": 10,
         "hooks": "0x0000000000000000000000000000000000000000",
         "poolId": "0x0000000000000000000000002924385de86506a88003d7970b0efe2fad25b99d"
+      },
+      {
+        "currency0": "0x153c8d62895b82314f50d83499e5ee50eac61db3",
+        "currency1": "0x445b73572c94287d0334375e4589a5d9eed81b7f",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "hooks": "0x0000000000000000000000000000000000000000",
+        "poolId": "0x32e84a2a32104c7cf7c2c20ecc1432103bb2e42ef510b8380d216f75aea39b8d"
       }
     ]
   },
   "intentV1": {
-    "core": "0x6bc98e16392bedca6d405e9e60cebbb98d2fd0e6",
-    "factory": "0x6eed2ec69cbe0fa940121dddb137e9cec97ba583",
-    "loopRouter": "0x48dfee20419ddcce8d4063f4ef49e7200d8bbf1e",
-    "privateRouter": "0xF60E060d5C58945F98EfB607BfC53D65c23ad612",
+    "core": "0xb3751229acc969e3778861b99b677d2e86b7937f",
+    "factory": "0xa8453052034b21d7f75a18537bcbff02a55ff431",
+    "loopRouter": "0xdac27a3860941d1f8a287bfad6e4550627afa0b2",
+    "rolloverRouter": "0x19a82222481B3f7b4241A6E3CFfF33e3CDa8f297",
+    "privateRouter": "0x1cD79d2b69d74751cB7fcf98ADb744f53009297C",
+    "exitDesk": "0x2ed6850759fbd37c7413b03fa4fafd3004d42806",
     "previousPrivateLanes": [
       {
         "core": "0x249b912e0218882f30d12639db08104bf5d9b9f1",
@@ -310,9 +391,64 @@ export const TESTNET_MANIFEST = {
         "routers": [
           "0x858b427e36b86c2b69663fd6ba39110a614790f7"
         ]
+      },
+      {
+        "core": "0x6bc98e16392bedca6d405e9e60cebbb98d2fd0e6",
+        "routers": [
+          "0xf60e060d5c58945f98efb607bfc53d65c23ad612"
+        ]
+      },
+      {
+        "core": "0xd0cf3df12de33cd54600b38479cb01c6b83515d6",
+        "routers": [
+          "0xa253de6d89f5ad72a36809082536aa284cfdd4b6"
+        ]
+      },
+      {
+        "core": "0x11d8edde4d0f2784e3d6aedf3d27a820d4686bf0",
+        "routers": [
+          "0x40c60cb4d3760a38ca759be43d220d1377e998ce"
+        ]
+      },
+      {
+        "core": "0xb7b880de04111ba65aeefd7de0561860f4177766",
+        "routers": [
+          "0xb7286c6dc8a577b6a7068563292696a71c5afa94"
+        ]
+      },
+      {
+        "core": "0x35a03f2554f6f927c22ac3be7b485b91591d8232",
+        "routers": [
+          "0x0f6a7f767f18b204629b7a8a97a242031ef82180"
+        ]
+      },
+      {
+        "core": "0xa81e876ef7f03cd58a42848cdbc7508835ccc443",
+        "routers": [
+          "0xe8967bd79f4863323704d89e85737152df189fd8"
+        ]
+      },
+      {
+        "core": "0xf30c76e1ba4357a56a2922cab8206347f598a68f",
+        "routers": [
+          "0x4c86b39572f3bd2c431635735344ea30d7a889c3"
+        ]
+      },
+      {
+        "core": "0xa35c0f6aedd564f54a8ea0b1b79d2417d8349963",
+        "routers": [
+          "0x762329162e41c26df383c0ff32d5ced5d7894978"
+        ]
+      },
+      {
+        "core": "0x4f83d5e247122653b19384389b3b47de3351eebd",
+        "routers": [
+          "0x2b2babdc4764f2b9fc58bcb9de64cfbf235e7df6"
+        ]
       }
     ]
   },
+  "intentV1IndexerUrl": "https://indexer-rehearsal.up.railway.app",
   "intentV1Assets": {
     "GLDx": {
       "lendAsset": {
@@ -322,18 +458,32 @@ export const TESTNET_MANIFEST = {
         "stable": false
       },
       "public": true,
-      "factory": "0xdeb872d11ea464482b76efffea62c0372a8e2982",
-      "core": "0xe1474c3249f09108ee0dab05bebd0221acd3221f",
+      "factory": "0x8d48fc83ad71239d33d736e8e42921601db3c855",
+      "core": "0x9bb50e8663d79ade5ac810dbaa3a3c1854854222",
+      "rolloverRouter": "0x4c57F0E1641cB46cb078d826E9a31d75cb75a1ea",
+      "exitDesk": "0x2ed6850759fbd37c7413b03fa4fafd3004d42806",
+      "indexerUrl": "https://indexer-rehearsal.up.railway.app",
       "engine": {
-        "registry": "0xfd7f64558ead31f073ae98ff89b477c55a6d1415",
-        "rewards": "0xdDcAc96e741EF4a295637CFF7B407A5dee791bb0",
-        "cashoutRouter": "0xb98e62eccc0a852e85bfa2b2447eb934298392a3"
+        "registry": "0x44e48d810d05919255e6f759e88eaee39fb53047",
+        "rewards": "0x69499d7b9E43D5EA9EAc3830Eb40826EB8f18B6A",
+        "cashoutRouter": "0x2cc251a27ed7b0fb9f7b80abf67816a290461012"
       },
       "collateral": [
         {
           "symbol": "SCHIFFYx",
           "token": "0xFD936D6C8428Cd971Bb62001D775b23713480B8A",
           "category": "MEME"
+        }
+      ],
+      "cashoutPools": [
+        {
+          "protocol": "v4",
+          "currency0": "0x2b4066a52f7a844d810f402c21b3543c62bcd18c",
+          "currency1": "0xfd936d6c8428cd971bb62001d775b23713480b8a",
+          "fee": 3000,
+          "tickSpacing": 60,
+          "hooks": "0x0000000000000000000000000000000000000000",
+          "poolId": "0x21663d2666aa65d5a70987795d0933bab7de86de38c80dae835a2f8f78b2dbd5"
         }
       ]
     },
@@ -345,21 +495,186 @@ export const TESTNET_MANIFEST = {
         "stable": false
       },
       "public": true,
-      "factory": "0xb5dc1dcf13f0d05dc6b16da5ee3b5c372be542fc",
-      "core": "0xad1d7cf6f5515f1b75d0f3780a6c8f22f16bc79d",
+      "factory": "0xa5ce88cd9c81ce682d13ae4c677475c33792aa35",
+      "core": "0xcf5c868aa0af8ebe3a5f2600d2eb9f889eb96016",
+      "rolloverRouter": "0xd0e59Fe2e308230e7a835f2D65212D6228A529Ce",
+      "loopRouter": "0x1fc63ca72C3026222BBB75AF3E616c94eF43F159",
+      "putRouter": "0xeD44B688C88B71E591449A8239fC9fb02D4B9d50",
+      "exitDesk": "0x2ed6850759fbd37c7413b03fa4fafd3004d42806",
+      "indexerUrl": "https://indexer-rehearsal.up.railway.app",
       "engine": {
-        "registry": "0xd3f44149bae5df2a51e2e6e6fc8fb94d984e2307",
-        "rewards": "0x5A44Bc525da8781aaB4E210e15dDbC62E6cF9359",
-        "cashoutRouter": "0x8a9319aee72736dd3218471a8e9ba9311411f300"
+        "registry": "0xc9d81629e3bf335d2806e628d731321af06574f4",
+        "rewards": "0x25122A43e4226168BF88Dad83e4b498639Cc13A4",
+        "cashoutRouter": "0x972bcbcd2ea2a01621bf47a3c9148b0c918646b1"
       },
       "collateral": [
         {
           "symbol": "NVDOG",
           "token": "0xF8d73A57EA78aaeA59F6212DB18aE20e6287a198",
           "category": "MEME"
+        },
+        {
+          "symbol": "USDG",
+          "token": "0x445b73572C94287D0334375E4589A5d9EEd81b7f",
+          "category": "RH_ECOSYSTEM"
+        }
+      ],
+      "cashoutPools": [
+        {
+          "protocol": "v4",
+          "currency0": "0x153c8d62895b82314f50d83499e5ee50eac61db3",
+          "currency1": "0xf8d73a57ea78aaea59f6212db18ae20e6287a198",
+          "fee": 3000,
+          "tickSpacing": 60,
+          "hooks": "0x0000000000000000000000000000000000000000",
+          "poolId": "0x263a9613ec556df8284f1fc27a0369ab9c2fef396d9a4c0542a409043a191a3f"
+        },
+        {
+          "protocol": "v3",
+          "poolAddress": "0xea88343e549e3356498aed6c54f404ae982aaeee",
+          "currency0": "0x153c8d62895b82314f50d83499e5ee50eac61db3",
+          "currency1": "0x445b73572c94287d0334375e4589a5d9eed81b7f",
+          "fee": 500,
+          "tickSpacing": 10,
+          "hooks": "0x0000000000000000000000000000000000000000",
+          "poolId": "0x000000000000000000000000ea88343e549e3356498aed6c54f404ae982aaeee"
+        },
+        {
+          "currency0": "0x153c8d62895b82314f50d83499e5ee50eac61db3",
+          "currency1": "0x445b73572c94287d0334375e4589a5d9eed81b7f",
+          "fee": 3000,
+          "tickSpacing": 60,
+          "hooks": "0x0000000000000000000000000000000000000000",
+          "poolId": "0x32e84a2a32104c7cf7c2c20ecc1432103bb2e42ef510b8380d216f75aea39b8d"
         }
       ]
     }
+  },
+  "intentV1Previous": [
+    {
+      "intentV1": {
+        "core": "0xf30c76e1ba4357a56a2922cab8206347f598a68f",
+        "factory": "0x5cc75a7a21f70f40e8fc3068bb4c1aa9c1624576",
+        "exitDesk": "0xd35dcf0d6165106851e39f52363979a9d907d379"
+      },
+      "intentV1IndexerUrl": "https://retained-r13d-indexer-rehearsal.up.railway.app"
+    }
+  ],
+  "intentV1AssetsPrevious": {
+    "GLDx": [
+      {
+        "entry": {
+          "lendAsset": {
+            "token": "0x2b4066a52F7A844d810f402c21B3543c62BcD18c",
+            "symbol": "GLDx",
+            "decimals": 18,
+            "stable": false
+          },
+          "public": true,
+          "factory": "0x545b9a926764d78439149ef5b23fdb7809e064a3",
+          "core": "0x37992cefded05ad6f012a675c18031efed04e894",
+          "rolloverRouter": "0x4189295ea60eE0064C91160F5cd63dbF7be7EB39",
+          "exitDesk": "0xd35dcf0d6165106851e39f52363979a9d907d379",
+          "indexerUrl": "https://retained-r13d-indexer-rehearsal.up.railway.app",
+          "engine": {
+            "registry": "0x775ccf78b110f3c7e3e235f2563e10e035b7ece1",
+            "rewards": "0x0f0ffBB53ed0bbAc3aAA7cE5199eE74B93435cC3",
+            "cashoutRouter": "0x67b0cbeefbae0beceb2e2706fa1697d71acc0899"
+          },
+          "collateral": [
+            {
+              "symbol": "SCHIFFYx",
+              "token": "0xFD936D6C8428Cd971Bb62001D775b23713480B8A",
+              "category": "MEME"
+            }
+          ],
+          "cashoutPools": [
+            {
+              "protocol": "v4",
+              "currency0": "0x2b4066a52f7a844d810f402c21b3543c62bcd18c",
+              "currency1": "0xfd936d6c8428cd971bb62001d775b23713480b8a",
+              "fee": 3000,
+              "tickSpacing": 60,
+              "hooks": "0x0000000000000000000000000000000000000000",
+              "poolId": "0x21663d2666aa65d5a70987795d0933bab7de86de38c80dae835a2f8f78b2dbd5"
+            }
+          ]
+        },
+        "indexerUrl": "https://retained-r13d-indexer-rehearsal.up.railway.app"
+      }
+    ],
+    "NVDAx": [
+      {
+        "entry": {
+          "lendAsset": {
+            "token": "0x153c8D62895B82314f50d83499E5EE50eAC61dB3",
+            "symbol": "NVDAx",
+            "decimals": 18,
+            "stable": false
+          },
+          "public": true,
+          "factory": "0x8146fb0e166598ab7bd20c3e6bcab454cd35e108",
+          "core": "0xa10a5f116b34d957b283a15508f05ce676c401c5",
+          "rolloverRouter": "0xF0f3b80053981466014EDF6cAb8e2b62aCBC05A1",
+          "loopRouter": "0x33c559C1dFb41006ac251f2cBB885Ca472745eA8",
+          "putRouter": "0xd1008dB17eCa01dB497B11eEFABD9739677De784",
+          "exitDesk": "0xd35dcf0d6165106851e39f52363979a9d907d379",
+          "indexerUrl": "https://retained-r13d-indexer-rehearsal.up.railway.app",
+          "engine": {
+            "registry": "0x10cad33cc2008a457662ab82a41d57ad899e264c",
+            "rewards": "0x010F3705B17401666B54c667f8E038D8Ced6aDF8",
+            "cashoutRouter": "0xe3dc9e4da32db6f49b7c24cee04756d3a1d3b97f"
+          },
+          "collateral": [
+            {
+              "symbol": "NVDOG",
+              "token": "0xF8d73A57EA78aaeA59F6212DB18aE20e6287a198",
+              "category": "MEME"
+            },
+            {
+              "symbol": "USDG",
+              "token": "0x445b73572C94287D0334375E4589A5d9EEd81b7f",
+              "category": "RH_ECOSYSTEM"
+            }
+          ],
+          "cashoutPools": [
+            {
+              "protocol": "v4",
+              "currency0": "0x153c8d62895b82314f50d83499e5ee50eac61db3",
+              "currency1": "0xf8d73a57ea78aaea59f6212db18ae20e6287a198",
+              "fee": 3000,
+              "tickSpacing": 60,
+              "hooks": "0x0000000000000000000000000000000000000000",
+              "poolId": "0x263a9613ec556df8284f1fc27a0369ab9c2fef396d9a4c0542a409043a191a3f"
+            },
+            {
+              "protocol": "v3",
+              "poolAddress": "0xea88343e549e3356498aed6c54f404ae982aaeee",
+              "currency0": "0x153c8d62895b82314f50d83499e5ee50eac61db3",
+              "currency1": "0x445b73572c94287d0334375e4589a5d9eed81b7f",
+              "fee": 500,
+              "tickSpacing": 10,
+              "hooks": "0x0000000000000000000000000000000000000000",
+              "poolId": "0x000000000000000000000000ea88343e549e3356498aed6c54f404ae982aaeee"
+            },
+            {
+              "currency0": "0x153c8d62895b82314f50d83499e5ee50eac61db3",
+              "currency1": "0x445b73572c94287d0334375e4589a5d9eed81b7f",
+              "fee": 3000,
+              "tickSpacing": 60,
+              "hooks": "0x0000000000000000000000000000000000000000",
+              "poolId": "0x32e84a2a32104c7cf7c2c20ecc1432103bb2e42ef510b8380d216f75aea39b8d"
+            }
+          ]
+        },
+        "indexerUrl": "https://retained-r13d-indexer-rehearsal.up.railway.app"
+      }
+    ]
+  },
+  "rolloverExecutor": "0xa9CCD2D1fC2DFc61Da18cf007f906bDf687407a8",
+  "generationDeployer": {
+    "address": "0xcbe19415B40ab7101B4ce1588Eeff4810EAC48b3",
+    "startBlock": 148635898
   },
   "pools": {
     "gageEth": {
@@ -449,6 +764,88 @@ export const TESTNET_MANIFEST = {
       "tickSpacing": 60,
       "hooks": "0x0000000000000000000000000000000000000000",
       "poolId": "0x21663d2666aa65d5a70987795d0933bab7de86de38c80dae835a2f8f78b2dbd5"
+    },
+    "frxusdxUsdg": {
+      "currency0": "0x445b73572C94287D0334375E4589A5d9EEd81b7f",
+      "currency1": "0x60B588004cdF754fE00F950C62E6D64F5fFE4f4E",
+      "fee": 100,
+      "tickSpacing": 1,
+      "hooks": "0x0000000000000000000000000000000000000000",
+      "poolId": "0x34940b158a8b005780f4e7d5b3438cf05f5290e95b56dec101c7e6c8353b2a10"
     }
+  },
+  "lpLane": {
+    "public": true,
+    "startBlock": 144949533,
+    "core": "0x4DFF2096e5c5a3f44ba93fC23d8bc3E9c022B60D",
+    "registry": "0xaa2Ac18E09c25D74c31932e57b7F067A4d0D193B",
+    "vaultFactory": "0x57fc82589B12F9b3e95390f06E8a979ce566035B",
+    "vaults": [],
+    "adapters": [
+      {
+        "kind": "uniswap-v3",
+        "address": "0xb1EA579f213C3bE65db915b61BF0d3287182B011",
+        "positionManager": "0x105e2d8713Ca822356cc60dC36e161d610f7cC6E",
+        "factory": "0x89d32476023C4432568d41BEbb9A8591b7935A49"
+      },
+      {
+        "kind": "uniswap-v4",
+        "address": "0x007c39f27D33B7971A4c97944B2F5272c3FCB297",
+        "positionManager": "0x8D4dF89cfc0Ee6D2CcD53a992f37bA7493D4fd49",
+        "poolManager": "0x751562f1BD14925769E8641436fcFaCf51fF5740"
+      },
+      {
+        "kind": "fables",
+        "address": "0x4256B18AF0cC182415312dB8cC6cF9A99889b97D",
+        "positionManager": "0x092Fd6Df435a552EA9471720FB2c4F90CD112FD3",
+        "poolManager": "0x751562f1BD14925769E8641436fcFaCf51fF5740",
+        "hook": "0x64C65074e4Db055AF4A3a010634Ed88260b71000"
+      }
+    ],
+    "executors": [
+      {
+        "address": "0x27e287dF5Ecd0e5707880D9A5b674a7ef42a91a7",
+        "token": "0x7943e237c7F95DA44E0301572D358911207852Fa",
+        "kind": "one-pool",
+        "pools": [
+          "0x15683C54afD09e4d11aC2731fe4D3De2BaB70d84"
+        ]
+      }
+    ],
+    "pools": [
+      {
+        "adapter": "0xb1EA579f213C3bE65db915b61BF0d3287182B011",
+        "pool": "0x15683C54afD09e4d11aC2731fe4D3De2BaB70d84",
+        "token0": "0x445b73572C94287D0334375E4589A5d9EEd81b7f",
+        "token1": "0x7943e237c7F95DA44E0301572D358911207852Fa",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "name": "Uniswap v3 WETH/USDG 0.3% (testnet)"
+      },
+      {
+        "adapter": "0x007c39f27D33B7971A4c97944B2F5272c3FCB297",
+        "pool": "0x30813a1F3591BAbFbE721798cADEcF309d23071E",
+        "token0": "0x7943e237c7F95DA44E0301572D358911207852Fa",
+        "token1": "0x445b73572C94287D0334375E4589A5d9EEd81b7f",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "name": "Uniswap v4 ETH/USDG 0.3% (testnet)",
+        "poolId": "0x6ac6124d396b25383acf54c030813a1f3591babfbe721798cadecf309d23071e",
+        "native": true,
+        "hooks": "0x0000000000000000000000000000000000000000"
+      },
+      {
+        "adapter": "0x4256B18AF0cC182415312dB8cC6cF9A99889b97D",
+        "pool": "0x030c2986Ba42d679e52C1D9dFd195ab341DdE849",
+        "token0": "0x7943e237c7F95DA44E0301572D358911207852Fa",
+        "token1": "0x445b73572C94287D0334375E4589A5d9EEd81b7f",
+        "fee": 8388608,
+        "tickSpacing": 10,
+        "name": "Fables ETH/USDG (testnet)",
+        "poolId": "0x7b25d0c97eae125e89e8abae030c2986ba42d679e52c1d9dfd195ab341dde849",
+        "native": true,
+        "hooks": "0x64C65074e4Db055AF4A3a010634Ed88260b71000"
+      }
+    ]
   }
 } as const;

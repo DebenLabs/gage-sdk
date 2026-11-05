@@ -1,0 +1,17 @@
+blank_issues_enabled: true
+contact_links:
+  - name: List a token on gage
+    url: https://github.com/DebenLabs/gage-contracts/issues/new?template=token-listing.yml
+    about: Ask gage to accept a token as collateral, or to add a pool or exit route for one it accepts.
+  - name: Integrate with gage, a Rates API key or your site's origin
+    url: https://github.com/DebenLabs/gage-contracts/issues/new?template=integration.yml
+    about: An integration, a Rates API key (sent to you privately, never in an issue) or browser access to the rates service for your site.
+  - name: Report a vulnerability (private)
+    url: https://github.com/DebenLabs/gage-sdk/security/advisories/new
+    about: Never in a public issue. See SECURITY.md.
+  - name: Support
+    url: https://gage.cash/support
+    about: Help with a loan, a deposit or the app.
+  - name: Documentation
+    url: https://docs.gage.cash
+    about: How gage works, its contracts and gage-sdk.

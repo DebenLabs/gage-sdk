@@ -1,9 +1,11 @@
 /**
  * Valet's spend limits (D297): the most an agent's own key may borrow, and deposit into partner vaults, in USDG, in one
- * action and in any 24 hours, set by the wallet's owner in this server's environment. Loans and loops count against the
- * borrowing limits by their principal, deposits against the deposit limits by their amount. Repaying, cashing out,
- * withdrawing, cancelling and collecting bring money or collateral back to the wallet and are not limited, nor is an
- * action in an asset other than USDG (the founder's choice). A roll counts only what it borrows beyond the loan it
+ * action and in any 24 hours, set by the wallet's owner in this server's environment. Loans, loops and LP loans count
+ * against the borrowing limits by their principal, deposits (into an LP vault too, and a park's, D334) against the
+ * deposit limits by their amount. Repaying, taking an LP position back, cashing out, withdrawing, exiting a partner vault
+ * or a rehypo pool now, cancelling, collecting and claiming an LP
+ * vault's bonus bring money or collateral back to the wallet and are not limited, nor is an action in an asset other
+ * than USDG (the founder's choice). A roll counts only what it borrows beyond the loan it
  * repays (the founder, 18 October 2026): gage-sdk rolls a loan into one of the same size, so a roll counts nothing, as
  * repaying does; leaving a loan to roll by itself, or ending that, moves nothing, nor does a rating of gage (D302). On
  * mainnet each limit has a default, 100 USDG an action and 250 in 24 hours, which the owner may lift with `off` (D311:
@@ -41,9 +43,14 @@ const SETTINGS: Record<Kind, { each: string; day: string }> = {
   borrow: { each: "GAGE_MAX_BORROW_USDG", day: "GAGE_MAX_BORROW_DAY_USDG" },
   deposit: { each: "GAGE_MAX_DEPOSIT_USDG", day: "GAGE_MAX_DEPOSIT_DAY_USDG" },
 };
-const NOT_LIMITED = ["reclaim", "cash_out", "roll (a loan of the same size)", "auto_roll", "cancel_auto_roll", "earn_redeem", "cancel", "collect", "feedback", "actions in an asset other than USDG"];
+const NOT_LIMITED = [
+  "reclaim", "cash_out", "roll (a loan of the same size)", "auto_roll", "cancel_auto_roll", "earn_redeem", "cancel", "collect", "feedback",
+  "lp_repay", "lp_roll (to a loan no larger)", "lp_return_position", "lp_collect", "lp_withdraw", "lp_redeem", "lp_claim_bonus", "lp_wrap", "lp_unwrap",
+  "lp_create_vault", "lp_vault_add_pool", "lp_vault_remove_pool", "unpark", "rehypo_exit_now", "earn_exit_now", "earn_exit_list", "earn_exit_cancel",
+  "earn_exit_collect", "actions in an asset other than USDG",
+];
 /** What the limits leave free (`NOT_LIMITED`), in words, for the guide, `init` and `gage_limits`. */
-export const NOT_LIMITED_WORDS = "Repaying, cashing out, rolling a loan over at the same size, leaving a loan to roll by itself or ending that, withdrawing, cancelling, collecting and rating gage are not limited, nor are actions in an asset other than USDG.";
+export const NOT_LIMITED_WORDS = "Repaying (an LP loan too), taking an LP position back, cashing out, rolling a loan over at the same size (an LP loan to one no larger), leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools and rating gage are not limited, nor are actions in an asset other than USDG.";
 
 /**
  * A setting's amount of USDG, whole or with up to six decimals, as raw USDG, or null for `off` (no limit, D311); anything
@@ -142,9 +149,25 @@ function counted(view: View, usdg: Address): { kind: Kind; amount: bigint; what:
   const isUsdg = (asset?: { token: Address }) => asset === undefined || asset.token.toLowerCase() === usdg.toLowerCase();
   switch (view.action) {
     case "borrow": return isUsdg(view.asset) ? { kind: "borrow", amount: BigInt(view.principal), what: "This loan borrows" } : null;
-    case "leverage": return { kind: "borrow", amount: BigInt(view.principal), what: "This loop borrows" };
+    // A loop or a put in a lend asset (its `asset`) borrows that asset: not limited, as a loan in it is not.
+    case "leverage": return isUsdg(view.asset) ? { kind: "borrow", amount: BigInt(view.principal), what: "This loop borrows" } : null;
+    case "put_open": return isUsdg(view.asset) ? { kind: "borrow", amount: BigInt(view.principal), what: "This put borrows" } : null;
     case "earn_deposit": return isUsdg(view.asset) ? { kind: "deposit", amount: BigInt(view.amount), what: "This deposit is" } : null;
-    case "roll": {
+    // The LP lane lends and takes USDG alone (docs/api.md "LP lane"): an LP loan counts its principal, an LP vault's
+    // deposit its amount. A borrow planned once its loan is open answers lp_withdraw's view: it borrows nothing new.
+    case "lp_borrow": return { kind: "borrow", amount: BigInt(view.principal), what: "This LP loan borrows" };
+    case "lp_deposit": return { kind: "deposit", amount: BigInt(view.amount), what: "This deposit is" };
+    case "lp_roll": {
+      // As a roll: only what the new LP loan borrows beyond the one it repays.
+      const more = BigInt(view.principal) - BigInt(view.oldPrincipal);
+      return more > 0n ? { kind: "borrow", amount: more, what: "This LP roll borrows a further" } : null;
+    }
+    // Wrapping Fables receipts into a position, or unwrapping one, moves no USDG. A borrow against receipts is planned,
+    // and limited as lp_borrow, once its wrap is mined (gage-sdk's run asks again with the loan's own plan).
+    case "lp_wrap": case "lp_unwrap": return null;
+    // A curator opening an LP vault or changing its pools (D318) moves no USDG.
+    case "lp_create_vault": case "lp_vault_add_pool": case "lp_vault_remove_pool": return null;
+    case "roll": case "put_roll": {
       // Only what the new loan borrows beyond the old one; a roll of the same size borrows nothing new.
       const more = BigInt(view.principal) - BigInt(view.oldPrincipal);
       return more > 0n && isUsdg(view.asset) ? { kind: "borrow", amount: more, what: "This roll borrows a further" } : null;
@@ -152,6 +175,20 @@ function counted(view: View, usdg: Address): { kind: Kind; amount: bigint; what:
     // Bringing money or collateral back, or moving nothing now: never counted. A cash-out repays the loan from the sale
     // of its pledge and pays the wallet the rest, as repaying would bring the pledge back. A rating of gage (D302) moves no money.
     case "cancel": case "reclaim": case "cash_out": case "auto_roll": case "cancel_auto_roll": case "earn_redeem": case "collect": case "feedback": return null;
+    // A put closed out of its pledge brings the rest of it back; leaving a put to roll by itself, or ending that, moves nothing now.
+    case "put_close": case "put_auto_roll": case "put_cancel_auto_roll": return null;
+    // Repaying an LP loan, taking its position back, collecting its fees, withdrawing credits, redeeming LP vault shares
+    // and claiming a bonus bring money or a position back to the wallet.
+    case "lp_repay": case "lp_return_position": case "lp_collect": case "lp_withdraw": case "lp_redeem": case "lp_claim_bonus": return null;
+    // Parking a position deposits what it held into a partner vault (D334), counted as a deposit in USDG; unparking
+    // withdraws from one into the wallet's own new position.
+    case "park": return isUsdg({ token: view.token }) ? { kind: "deposit", amount: BigInt(view.amount), what: "This park deposits" } : null;
+    case "unpark": return null;
+    // A rehypo pool's exit now (root D357) commits the source's vault shares for the LP leaving: money comes back.
+    case "rehypo_exit_now": return null;
+    // A partner vault's exit now (Intent D57) commits the wallet's own shares, which a sale redeems for it; listing the
+    // exit's next loan, cancelling it and collecting what its sales paid move nothing out.
+    case "earn_exit_now": case "earn_exit_list": case "earn_exit_cancel": case "earn_exit_collect": return null;
   }
 }
 

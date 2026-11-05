@@ -9,13 +9,14 @@
  * It serves Robinhood Chain (4663, D260) unless GAGE_NETWORK=testnet (D311). There a key signs under spend limits (D297):
  * the owner's GAGE_MAX_BORROW_USDG, GAGE_MAX_BORROW_DAY_USDG, GAGE_MAX_DEPOSIT_USDG and GAGE_MAX_DEPOSIT_DAY_USDG (`off`
  * lifts one, D311), else 100 USDG an action and 250 in 24 hours (limits.ts); on the testnet only those set. GAGE_RPC_URL, GAGE_INDEXER_URL, GAGE_RATES_URL,
- * GAGE_VALUATION_URL and GAGE_FAUCET_URL point it elsewhere than the network's own services. In server mode stdout
- * carries MCP messages only; logs go to stderr.
+ * GAGE_VALUATION_URL and GAGE_FAUCET_URL point it elsewhere than the network's own services, and GAGE_API_KEY is a Rates
+ * API key for gage's rates service (D382, options.ts). In server mode stdout carries MCP messages only; logs go to stderr.
  */
 import path from "node:path";
-import { ApiError, createGage, defaultsFor, plain, privateKeySigner, refusalOf, type GageOptions, type Network } from "gage-sdk";
+import { ApiError, createGage, defaultsFor, plain, privateKeySigner, refusalOf } from "gage-sdk";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { Ledger, limitsFrom } from "./limits.js";
+import { gageOptions } from "./options.js";
 import { createLocalMcp } from "./server.js";
 import { gageHome, init, keyFile, readKey } from "./wallet.js";
 
@@ -24,13 +25,7 @@ const log = (fields: Record<string, unknown>) => console.error(JSON.stringify({ 
 const [command] = process.argv.slice(2);
 try {
   const env = process.env;
-  const options: GageOptions = {};
-  // createGage refuses a network it does not know rather than read it as the testnet.
-  if (env.GAGE_NETWORK) options.network = env.GAGE_NETWORK as Network;
-  if (env.GAGE_RPC_URL) options.rpcUrl = env.GAGE_RPC_URL;
-  if (env.GAGE_INDEXER_URL) options.indexerUrl = env.GAGE_INDEXER_URL;
-  if (env.GAGE_RATES_URL) options.ratesUrl = env.GAGE_RATES_URL;
-  if (env.GAGE_VALUATION_URL) options.valuationUrl = env.GAGE_VALUATION_URL;
+  const options = gageOptions(env);
   const gage = createGage(options);
   const { chainId } = gage.deployment;
   const network = defaultsFor(chainId);

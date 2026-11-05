@@ -1,6 +1,6 @@
 {
   "name": "gage-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "mcpName": "cash.gage/gage",
   "type": "module",
   "description": "gage's MCP server for agents with their own wallet: `npx -y gage-mcp init`, then borrow and earn on gage. Robinhood Chain under spend limits, and its testnet.",
@@ -47,7 +47,7 @@
     "start": "node dist/cli.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src test",
+    "lint": "eslint src test examples",
     "test": "vitest run",
     "prepack": "pnpm run build"
   },

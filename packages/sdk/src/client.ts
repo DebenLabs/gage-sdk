@@ -5,6 +5,7 @@
  */
 import type { Address } from "viem";
 import { createChain } from "./chain.js";
+import { foundGenerationsRefresher } from "./discovery.js";
 import { parseDeployment, type Deployment } from "./deployment.js";
 import { ApiError, requireThat } from "./errors.js";
 import { waitForFill, type FillOutcome, type WaitOptions } from "./fill.js";
@@ -12,12 +13,17 @@ import { MAINNET_MANIFEST } from "./deployments/mainnet.js";
 import { TESTNET_MANIFEST } from "./deployments/testnet.js";
 import { actionsOn, defaultsFor, networkNamed, type Network } from "./networks.js";
 import type { Ctx } from "./plans.js";
+import * as lp from "./lp.js";
+import { parkBatch, parkPoolFrom, parkPoolsIn, parkPositions, type ParkBatch, type ParkPoolInput } from "./park.js";
+import * as pools from "./pools.js";
 import { prepareNext, type Prepared } from "./prepare.js";
 import * as reads from "./reads.js";
 import { run, type RunOptions, type RunResult } from "./run.js";
-import { ACTIONS, actionInput, address, borrowQuoteInput, leverageQuoteInput, loanInput, parseInput, type ActionInput, type ActionName, type ActionRequest } from "./schemas.js";
+import {
+  ACTIONS, actionInput, address, borrowQuoteInput, leverageQuoteInput, loanInput, lpQuoteInput, parkId, parseInput, putQuoteInput, vaultInput, type ActionInput, type ActionName, type ActionRequest,
+} from "./schemas.js";
 import type { Signer } from "./signer.js";
-import { createUpstream } from "./upstream.js";
+import { createUpstream, type Upstream } from "./upstream.js";
 
 export interface GageOptions {
   /**
@@ -31,6 +37,11 @@ export interface GageOptions {
   indexerUrl?: string;
   ratesUrl?: string;
   /**
+   * A Rates API key (D382), sent to the rates service only. Without one, borrowing and lending work as ever, under the
+   * service's ceiling for callers without a key; with one, its own ceiling and the model's whole quote.
+   */
+  apiKey?: string;
+  /**
    * gage's valuation service: leverage also asks it for an aggregator's route (`GET /quote/loop-buy`, D243), KyberSwap's
    * on mainnet and, on the testnet, gage's stand-in for it (D245), and buys through it when that is cheapest and the
    * loop router admits its executor. The network's own when omitted; `null` leaves it out, and leverage then buys
@@ -43,9 +54,19 @@ export interface GageOptions {
   now?: () => number;
   /** The actions this Gage serves, every one when omitted; any other is refused (ACTION_NOT_SERVED). */
   actions?: readonly ActionName[];
+  /**
+   * Pools park and unpark serve besides the release's (D334): a DEX's own, a Uniswap v4 pool by its key (hooked ones too)
+   * and the StateView that prices it, a v3-style pool by its address, tokens, fee tier and tick spacing. Each is checked;
+   * one that is not refuses the Gage (INVALID_INPUT).
+   */
+  parkPools?: readonly ParkPoolInput[];
 }
 /** What a Gage built over a caller's context serves: every action unless it names fewer. */
-export interface GageScope { actions?: readonly ActionName[] }
+export interface GageScope {
+  actions?: readonly ActionName[];
+  /** Brings `ctx.d` up to date before each method (lend generations found on chain, r13: src/discovery.ts). */
+  refresh?: (force?: boolean) => Promise<void>;
+}
 
 type Input<T extends (c: Ctx, i: never) => unknown> = Parameters<T>[1];
 type Answer<T extends (...args: never[]) => Promise<unknown>> = Awaited<ReturnType<T>>;
@@ -63,6 +84,8 @@ export interface Gage {
   borrowQuote(input: Input<typeof reads.borrowQuote>): Promise<Answer<typeof reads.borrowQuote>>;
   /** A leveraged loop's amounts, cost and the most the purchase costs; signs nothing. */
   leverageQuote(input: Input<typeof reads.leverageQuote>): Promise<Answer<typeof reads.leverageQuote>>;
+  /** A put's pledge, purchase, loan, repayment, cost and the most the purchase costs, with a `prepare` object; signs nothing. */
+  putQuote(input: Input<typeof reads.putQuote>): Promise<Answer<typeof reads.putQuote>>;
   /**
    * One loan's state, amounts, deadlines, what can be done with it now (here, or on gage.cash for an action this Gage
    * does not serve), its standing instruction to roll and what closed it; a private loan reads as unknown.
@@ -72,14 +95,51 @@ export interface Gage {
   portfolio(wallet: string): Promise<Answer<typeof reads.portfolio>>;
   /** The partner vaults: tokens, fee, size, free cash, share value and gage.cash link. */
   earnVaults(): Promise<Answer<typeof reads.earnVaults>>;
+  /**
+   * One partner vault's free cash (D335): what withdrawals are paid from now, what comes back to it as its loans end
+   * (`schedule`, by day; `settling`, what the next settle books), only if their borrowers repay, and `bufferBps`, the
+   * share of the vault a new loan must leave free ("Cash kept free").
+   */
+  vaultFreeCash(input: Input<typeof reads.vaultFreeCash>): Promise<Answer<typeof reads.vaultFreeCash>>;
   /** A wallet's ETH for gas, USDG and collateral tokens. */
   balances(wallet: string): Promise<Answer<typeof reads.balances>>;
+  /**
+   * The LP lane (docs/api.md "LP lane"), where the release makes it public (`deployment.lpLane`; LP_CLOSED elsewhere): a
+   * wallet's Uniswap v3 and v4, SushiSwap v3 and Ramses positions in a pool the lane lends against, with their worth at
+   * the pool's price (its Uniswap v4 positions named by gage's index, each checked on chain).
+   */
+  lpPositions(wallet: string): Promise<Answer<typeof lp.lpPositions>>;
+  /** A fixed-cost USDG loan against one position, signed for the wallet for five minutes at most, with a `prepare` object for lp_borrow. */
+  lpQuote(input: Input<typeof lp.lpQuote>): Promise<Answer<typeof lp.lpQuote>>;
+  /** A wallet's LP loans, what can be done with each now, and its credits on the lane's core. */
+  lpLoans(wallet: string): Promise<Answer<typeof lp.lpLoans>>;
+  /** The LP vaults: size, free cash, loans out, share value, fee and whether they take deposits and pay out now. */
+  lpVaults(): Promise<Answer<typeof lp.lpVaults>>;
+  /**
+   * A DEX pool's vaults, one for each pool token gage lends, each on its own generation (D333): the calls that create
+   * them from the curator, for one wallet batch, and the same as a Safe's Transaction Builder file. Simulated now; signs
+   * nothing.
+   */
+  createPoolVaults(input: Input<typeof pools.createPoolVaults>): Promise<Answer<typeof pools.createPoolVaults>>;
+  /** The pools among the partner vaults, a curator's alone where one is named: each one's two sides, a vault or none. */
+  poolVaults(input?: Input<typeof pools.poolVaults>): Promise<Answer<typeof pools.poolVaults>>;
+  /**
+   * A wallet's out-of-range positions in the pools park serves (D334): each one's pool, range and the one token it holds,
+   * with the partner vaults that take it. `also` names positions a v4 PositionManager or a Fables hook cannot list.
+   */
+  parkPositions(wallet: string, also?: readonly { manager: string; id: string }[]): Promise<Answer<typeof parkPositions>>;
+  /** A park as one batch of calls for the wallet (EIP-5792), simulated whole first; `prepare` and `run` take it as action `park`. */
+  parkCalls(input: unknown): Promise<ParkBatch>;
+  /** An unpark as one batch of calls for the wallet (EIP-5792), simulated whole first; `prepare` and `run` take it as action `unpark`. */
+  unparkCalls(input: unknown): Promise<ParkBatch>;
   /** The next unsigned transaction of an action (simulated now) and the steps after it. Prepare again after each one. */
   prepare(input: unknown): Promise<Prepared>;
   /** Carries an action out with the caller's signer, for the signer's own wallet. */
   run(input: ActionRequest, signer: Signer, options?: RunOptions): Promise<RunResult>;
   /** Waits for a listing to be funded (`run`'s `loan`); then `collect` sends its payout to the wallet. */
   waitForFill(input: { loanId: string; engine?: string }, options?: WaitOptions): Promise<FillOutcome>;
+  /** Asks gage's indexer now for the lend generations found on chain (r13); every other method asks at most once a minute. */
+  refreshGenerations(): Promise<void>;
 }
 
 /** A Gage over a context its caller built: the hosted service builds its own from the live manifest; tests pass fakes. */
@@ -87,23 +147,34 @@ export function gageFrom(ctx: Ctx, scope: GageScope = {}): Gage {
   const wallet = (value: string) => parseInput(address, value) as Address;
   // Only what the deployment can carry out (`actionsOn`): rating gage (D302) where gage has an ERC-8004 entry, rolling
   // over where a generation has its router, cashing out where a core has one, whatever the scope names.
-  const actions = (scope.actions ?? ACTIONS).filter((a) => actionsOn(ctx.d).includes(a));
+  const actions = (scope.actions ?? ACTIONS).filter((a) => actionsOn({ ...ctx.d, parkPools: parkPoolsIn(ctx) }).includes(a));
   // An action this Gage does not serve is refused before anything is read.
   const served = <T extends ActionInput>(input: T): T => {
     requireThat(actions.includes(input.action), "ACTION_NOT_SERVED", `This service does not serve ${input.action}; it serves ${actions.join(", ")}`, 400);
     return input;
   };
   // Every method is async, so a refused input rejects its promise rather than throwing at the call.
-  return {
-    ctx, deployment: ctx.d, actions,
+  const gage: Gage = {
+    ctx, get deployment() { return ctx.d; }, actions,
     capabilities: async () => reads.capabilities(ctx, actions),
     assets: async () => reads.assets(ctx),
     borrowQuote: async (input) => reads.borrowQuote(ctx, parseInput(borrowQuoteInput, input)),
     leverageQuote: async (input) => reads.leverageQuote(ctx, parseInput(leverageQuoteInput, input)),
+    putQuote: async (input) => reads.putQuote(ctx, parseInput(putQuoteInput, input)),
     loan: async (input) => reads.loan(ctx, parseInput(loanInput, input), actions),
-    portfolio: async (w) => reads.portfolio(ctx, wallet(w)),
+    portfolio: async (w) => reads.portfolio(ctx, wallet(w), actions),
     earnVaults: async () => reads.earnVaults(ctx),
+    vaultFreeCash: async (input) => reads.vaultFreeCash(ctx, parseInput(vaultInput, input)),
     balances: async (w) => reads.balances(ctx, wallet(w)),
+    lpPositions: async (w) => lp.lpPositions(ctx, wallet(w)),
+    lpQuote: async (input) => lp.lpQuote(ctx, parseInput(lpQuoteInput, input)),
+    lpLoans: async (w) => lp.lpLoans(ctx, wallet(w), actions),
+    lpVaults: async () => lp.lpVaults(ctx),
+    createPoolVaults: async (input) => pools.createPoolVaults(ctx, parseInput(pools.createPoolVaultsInput, input)),
+    poolVaults: async (input) => pools.poolVaults(ctx, parseInput(pools.poolVaultsInput, input ?? {})),
+    parkPositions: async (w, also = []) => parkPositions(ctx, wallet(w), also.map((x) => ({ manager: parseInput(address, x.manager), id: parseInput(parkId, x.id) }))),
+    parkCalls: async (input) => parkBatch(ctx, served(parseInput(actionInput, { ...(input as object), action: "park" })) as Extract<ActionInput, { action: "park" }>),
+    unparkCalls: async (input) => parkBatch(ctx, served(parseInput(actionInput, { ...(input as object), action: "unpark" })) as Extract<ActionInput, { action: "unpark" }>),
     prepare: async (input) => prepareNext(ctx, served(parseInput(actionInput, input))),
     run: async (input, signer, options) => {
       // The signer's own wallet acts: an input naming another one is refused rather than overridden.
@@ -112,7 +183,16 @@ export function gageFrom(ctx: Ctx, scope: GageScope = {}): Gage {
       return run(ctx, served(parseInput(actionInput, { ...input, wallet: signer.address })), signer, options);
     },
     waitForFill: async (input, options) => waitForFill(ctx, parseInput(loanInput, input), options),
+    refreshGenerations: async () => { await scope.refresh?.(true); },
   };
+  // Lend generations found on chain (r13): each method reads the latest deployment, asked for at most once a minute.
+  const refresh = scope.refresh;
+  if (!refresh) return gage;
+  for (const [name, method] of Object.entries(gage)) {
+    if (typeof method !== "function" || name === "refreshGenerations") continue;
+    Object.assign(gage, { [name]: async (...args: unknown[]) => { await refresh(); return (method as (...a: unknown[]) => unknown)(...args); } });
+  }
+  return gage;
 }
 
 /**
@@ -122,15 +202,23 @@ export function gageFrom(ctx: Ctx, scope: GageScope = {}): Gage {
 export function createGage(options: GageOptions = {}): Gage {
   const named = options.network === undefined ? undefined : networkNamed(options.network);
   const bundled = named?.network === "testnet" ? TESTNET_MANIFEST : MAINNET_MANIFEST;
-  const d = parseDeployment(options.manifest ?? bundled);
+  const raw = options.manifest ?? bundled;
+  const d = parseDeployment(raw);
   if (named && named.chainId !== d.chainId) throw new ApiError("NETWORK_MISMATCH", `The manifest is not the ${named.network}'s`, 400);
   const n = defaultsFor(d.chainId);
   const valuationUrl = options.valuationUrl === undefined ? n.valuationUrl : options.valuationUrl;
-  return gageFrom({
+  const indexes = new Map<string, Upstream>();
+  const ctx: Ctx = {
     d, chain: createChain(options.rpcUrl ?? n.rpcUrl, d.chainId),
     indexer: createUpstream(options.indexerUrl ?? n.indexerUrl, options.fetch),
-    rates: createUpstream(options.ratesUrl ?? n.ratesUrl, options.fetch),
+    rates: createUpstream(options.ratesUrl ?? n.ratesUrl, options.fetch, options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
+    // A generation's own index, current or retained, from the manifest (D403), read with the caller's fetch.
+    indexerAt: (url) => indexes.get(url) ?? indexes.set(url, createUpstream(url, options.fetch)).get(url)!,
     ...(valuationUrl ? { valuation: createUpstream(valuationUrl, options.fetch) } : {}),
+    ...(options.parkPools?.length ? { parkPools: options.parkPools.map(parkPoolFrom) } : {}),
     now: options.now ?? (() => Math.floor(Date.now() / 1000)),
-  }, options.actions ? { actions: options.actions } : {});
+  };
+  // A release with a GenerationDeployer (r13) adds the lend generations it deployed since, from gage's indexer.
+  const found = (raw as { generationDeployer?: unknown }).generationDeployer !== undefined ? foundGenerationsRefresher(ctx, raw) : undefined;
+  return gageFrom(ctx, { ...(options.actions ? { actions: options.actions } : {}), ...(found ? { refresh: found } : {}) });
 }

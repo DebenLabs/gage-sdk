@@ -236,6 +236,73 @@ describe("collecting across generations", () => {
     ]);
     expect([p.next!.label, ...p.then]).toEqual(["Receive 5.00 USDG", "Receive 0.3 GLDx", expect.stringMatching(/^Collect from /), expect.stringMatching(/^Collect from /)]);
     expect(p.view).toMatchObject({ action: "collect", usdg: "5000000", earnings: "2000000", others: [{ ...GLD, cash: String(3n * E18 / 10n), earnings: String(E18 / 10n) }] });
+    expect(p.view).not.toHaveProperty("backing");
+  });
+
+  // A written-off loan's backing (`recapitalize`, D329) is in the vault's own asset, as its earnings are: the index's
+  // kind tells them apart, and the backing is never counted as earnings.
+  it("counts backing added to a written-off loan apart from earnings, USDG's and GLDx's each on its own row", async () => {
+    const indexer = fakeUpstream({
+      "/v2/positions?": { items: [], nextCursor: null },
+      "/intent/partners/vaults?": lists,
+      "/intent/partners/vaults/": (path: string) => ({ status: 200, body: { shares: "0", value: "0", withdrawableNow: "0", rewards: "0", pockets: path.includes(GLD_VAULT)
+        ? [{ id: 1, kind: "RECAPITALIZATION", loanId: "3", token: GLDX, claimable: String(E18 / 4n), private: false }, { id: 2, kind: "EARNINGS", loanId: "4", token: GLDX, claimable: String(E18 / 10n), private: false }]
+        : [{ id: 3, kind: "RECAPITALIZATION", loanId: "5", token: USDG, claimable: "7000000", private: false }, { id: 4, kind: "EARNINGS", loanId: "6", token: USDG, claimable: "2000000", private: false }] } }),
+    });
+    const p = await prepareNext(ctx({ d: d(), indexer }), { action: "collect", wallet: WALLET });
+    expect(p.summary.rows).toEqual([
+      { label: "Vault earnings", value: "2.00 USDG" },
+      { label: "Vault earnings in GLDx", value: "0.1 GLDx" },
+      { label: "Backing for written-off loans", value: "7.00 USDG" },
+      { label: "Backing for written-off loans in GLDx", value: "0.25 GLDx" },
+    ]);
+    expect(p.view).toMatchObject({
+      action: "collect", earnings: "2000000", others: [{ ...GLD, earnings: String(E18 / 10n) }],
+      backing: [{ token: USDG, symbol: "USDG", decimals: 6, amount: "7000000" }, { ...GLD, amount: String(E18 / 4n) }],
+    });
+    expect(p.view).not.toHaveProperty("recovered");
+  });
+
+  // D414: the index sums a written-off loan's backing by loan and names the oldest 64 pockets one claim takes.
+  it("claims a loan's backing the index sums, its next claim's pockets, counting what that claim pays", async () => {
+    const next = Array.from({ length: 64 }, (_, i) => 10 + i);
+    const indexer = fakeUpstream({
+      "/v2/positions?": { items: [], nextCursor: null },
+      "/intent/partners/vaults?": lists,
+      "/intent/partners/vaults/": (path: string) => ({ status: 200, body: { shares: "0", value: "0", withdrawableNow: "0", rewards: "0", pockets: [],
+        backing: path.includes(GLD_VAULT) ? [] : [{ loanId: "5", token: USDG, pockets: 70, claimable: "35000000", next: { ids: next, claimable: "32000000" }, private: false }] } }),
+    });
+    const p = await prepareNext(ctx({ d: d(), indexer }), { action: "collect", wallet: WALLET });
+    expect(p.summary.rows).toEqual([{ label: "Backing for written-off loans", value: "32.00 USDG" }]);
+    expect(p.view).toMatchObject({ action: "collect", backing: [{ token: USDG, symbol: "USDG", decimals: 6, amount: "32000000" }] });
+    const claim = decodeFunctionData({ abi: partnerVaultAbi, data: p.next!.transaction.data });
+    expect(claim).toEqual({ functionName: "claimPockets", args: [next.map(BigInt)] });
+    // Six pockets are left for the next collect, which the plan says (D414).
+    expect(p.notes).toContain("More claims are ready: collect again once these have gone through.");
+    // A loan's one backing pocket is its own claim.
+    const one = fakeUpstream({
+      "/v2/positions?": { items: [], nextCursor: null },
+      "/intent/partners/vaults?": lists,
+      "/intent/partners/vaults/": (path: string) => ({ status: 200, body: { shares: "0", value: "0", withdrawableNow: "0", rewards: "0", pockets: [],
+        backing: path.includes(GLD_VAULT) ? [] : [{ loanId: "5", token: USDG, pockets: 1, claimable: "7000000", next: { ids: [3], claimable: "7000000" }, private: false }] } }),
+    });
+    const single = await prepareNext(ctx({ d: d(), indexer: one }), { action: "collect", wallet: WALLET });
+    expect(decodeFunctionData({ abi: partnerVaultAbi, data: single.next!.transaction.data })).toEqual({ functionName: "claimPocket", args: [3n] });
+    expect(single.summary.rows).toEqual([{ label: "Backing for written-off loans", value: "7.00 USDG" }]);
+    expect(single.notes).not.toContain("More claims are ready: collect again once these have gone through.");
+  });
+
+  // D414: earnings past one claim's 64 pockets: the plan counts what its claim pays, and says the rest waits.
+  it("counts earnings past one claim's worth as what its claim pays, and says more claims are ready", async () => {
+    const indexer = fakeUpstream({
+      "/v2/positions?": { items: [], nextCursor: null },
+      "/intent/partners/vaults?": lists,
+      "/intent/partners/vaults/": (path: string) => ({ status: 200, body: { shares: "0", value: "0", withdrawableNow: "0", rewards: "0",
+        pockets: path.includes(GLD_VAULT) ? [] : Array.from({ length: 70 }, (_, i) => ({ id: 1 + i, kind: "EARNINGS", loanId: String(100 + i), token: USDG, claimable: "1000000", private: false })) } }),
+    });
+    const p = await prepareNext(ctx({ d: d(), indexer }), { action: "collect", wallet: WALLET });
+    expect(p.summary.rows).toEqual([{ label: "Vault earnings", value: "64.00 USDG" }]);
+    expect(p.notes).toContain("More claims are ready: collect again once these have gone through.");
   });
 });
 

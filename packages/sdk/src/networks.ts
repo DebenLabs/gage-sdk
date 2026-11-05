@@ -4,7 +4,7 @@
  * "testnet"`) or by a testnet manifest.
  */
 import type { Address } from "viem";
-import { MAINNET, TESTNET, type ChainId, type Deployment } from "./deployment.js";
+import { MAINNET, putGenerations, TESTNET, type ChainId, type Deployment } from "./deployment.js";
 import { ApiError } from "./errors.js";
 import { ACTIONS, type ActionName } from "./schemas.js";
 
@@ -86,16 +86,37 @@ export function networkNamed(name: unknown): NetworkDefaults {
 
 /**
  * The actions gage serves on a deployment: every one it can carry out there. Rating gage (`feedback`, D302) only where
- * gage has an ERC-8004 entry; rolling over (D285) only where a generation has its rollover router, and by itself only
- * with the keeper the release names (`rolloverExecutor`); a cash-out (D245) only where a core has its cash-out router.
- * The testnet's release names no rollover router, so it serves no roll.
+ * gage has an ERC-8004 entry; rolling over (D285) only where a current generation has its rollover router, and by itself
+ * only with the keeper the release names (`rolloverExecutor`); a cash-out (D245) only where a core has its cash-out
+ * router. A put opens only where a lend asset's generation offers puts (`putGenerations`: USDG among its collateral, its
+ * loop and put routers named), and closes and rolls wherever a current generation names its put router, by itself with
+ * the keeper. A generation the release keeps for its positions alone (`retired`) rolls nothing, since gage's keeper and
+ * rates service serve current generations only; where one names a rollover or put router, an instruction left there is
+ * still ended (`cancel_auto_roll`, `put_cancel_auto_roll`) and a put on it closed (`put_close`).
+ * The LP lane's actions (D314, D315) only where the release makes the lane public (`lpLane`), as the app serves it, its
+ * roll (D317) with them, and wrapping Fables receipts into a position and back only where it names a Fables adapter (D316).
+ * The testnet's release names no rollover router, so it serves no roll. Park and unpark (D334) where there is a pool to
+ * serve: the release's LP lane's, whatever its switch, or one the caller added (`parkPools`). A rehypo pool's exit now
+ * (root D357), and a partner vault's with its next listing, its cancel and what its sales paid, where a current
+ * generation names its exit desk (Intent D57).
  */
-export function actionsOn(d: Pick<Deployment, "chainId" | "engines" | "generations" | "rolloverExecutor">): ActionName[] {
+export function actionsOn(d: Pick<Deployment, "chainId" | "usdg" | "engines" | "generations" | "rolloverExecutor"> & Partial<Pick<Deployment, "lpLane" | "retired" | "parkPools">>): ActionName[] {
   const rolls = d.generations.some((g) => g.rolloverRouter !== null);
   const sells = [...d.engines, ...d.generations.map((g) => g.core)].some((e) => e.cashoutRouter !== null);
+  const puts = d.generations.some((g) => g.putRouter !== null);
+  // What a retained generation's routers still do: end the instructions left on them, and close a put.
+  const kept = d.retired ?? [];
+  const ends = rolls || kept.some((g) => g.rolloverRouter !== null), closes = puts || kept.some((g) => g.putRouter !== null);
+  const lp = Boolean(d.lpLane), fables = Boolean(d.lpLane?.adapters.some((a) => a.kind === "fables")), curators = Boolean(d.lpLane?.vaultFactory);
+  const desk = d.generations.some((g) => g.exitDesk !== null);
   const served: Record<ActionName, boolean> = {
     borrow: true, leverage: true, cancel: true, reclaim: true, cash_out: sells, roll: rolls, auto_roll: rolls && d.rolloverExecutor !== null,
-    cancel_auto_roll: rolls, earn_deposit: true, earn_redeem: true, collect: true, feedback: defaultsFor(d.chainId).beacon !== null,
+    cancel_auto_roll: ends, earn_deposit: true, earn_redeem: true, collect: true, feedback: defaultsFor(d.chainId).beacon !== null,
+    put_open: putGenerations(d).length > 0, put_close: closes, put_roll: puts, put_auto_roll: puts && d.rolloverExecutor !== null, put_cancel_auto_roll: closes,
+    lp_borrow: lp, lp_repay: lp, lp_return_position: lp, lp_collect: lp, lp_withdraw: lp, lp_deposit: lp, lp_redeem: lp, lp_claim_bonus: lp, lp_roll: lp,
+    lp_wrap: fables, lp_unwrap: fables, lp_create_vault: curators, lp_vault_add_pool: lp, lp_vault_remove_pool: lp,
+    park: (d.parkPools?.length ?? 0) > 0, unpark: (d.parkPools?.length ?? 0) > 0,
+    rehypo_exit_now: desk, earn_exit_now: desk, earn_exit_list: desk, earn_exit_cancel: desk, earn_exit_collect: desk,
   };
   return ACTIONS.filter((a) => served[a]);
 }

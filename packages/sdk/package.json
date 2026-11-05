@@ -1,6 +1,6 @@
 {
   "name": "gage-sdk",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "description": "gage for builders and agents: read gage, prepare transactions, and carry them out with your own key. Robinhood Chain and its testnet.",
   "license": "MIT",
@@ -32,10 +32,15 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
+    },
+    "./visual": {
+      "types": "./dist/visual.d.ts",
+      "default": "./dist/visual.js"
     }
   },
   "files": [
     "dist",
+    "docs",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

@@ -14,6 +14,7 @@ const LIMIT = 4_000_000;
 const TIMEOUT_MS = 25_000;
 
 const unavailable = () => new ApiError("UPSTREAM_UNAVAILABLE", "A gage data service did not answer", 503, true);
+const limited = () => new ApiError("RATE_LIMITED", "A gage data service asks for fewer requests a minute; wait and ask again", 429, true);
 const tooLarge = () => new ApiError("UPSTREAM_TOO_LARGE", "A gage data service answered more than this API passes on", 503);
 
 /**
@@ -54,17 +55,28 @@ async function bodyOf(response: Response, deadline: number): Promise<string> {
   return new TextDecoder().decode(bytes);
 }
 
-export function createUpstream(baseUrl: string, fetcher: typeof fetch = globalThis.fetch, options: { timeoutMs?: number } = {}): Upstream {
+/**
+ * `apiKey`: a Rates API key (D382), sent as `Authorization: Bearer` on every request to this upstream, so give it to the
+ * rates service's only. A `429` is `RATE_LIMITED` (retryable): a caller without a key has a ceiling a minute per address.
+ */
+export function createUpstream(baseUrl: string, fetcher: typeof fetch = globalThis.fetch, options: { timeoutMs?: number; apiKey?: string } = {}): Upstream {
   const base = new URL(baseUrl);
   if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error("Upstream must be an HTTP(S) URL without credentials, query or fragment");
   const root = base.href.replace(/\/$/, "");
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+  const key = options.apiKey?.trim();
+  if (key !== undefined && (key === "" || /\s/.test(key))) throw new Error("A Rates API key is one word");
+  const headers: Record<string, string> = { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
   const raw = async (path: string) => {
     const deadline = Date.now() + timeoutMs;
     let response: Response;
     try {
-      response = await fetcher(`${root}${path}`, { signal: AbortSignal.timeout(timeoutMs), redirect: "error", headers: { Accept: "application/json" } });
+      response = await fetcher(`${root}${path}`, { signal: AbortSignal.timeout(timeoutMs), redirect: "error", headers });
     } catch { throw unavailable(); }
+    if (response.status === 429) {
+      await response.body?.cancel().catch(() => undefined);
+      throw limited();
+    }
     const text = await bodyOf(response, deadline);
     let body: unknown = null;
     try { body = JSON.parse(text); } catch { /* a non-JSON answer is read as no body */ }

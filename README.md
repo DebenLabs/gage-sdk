@@ -58,10 +58,14 @@ prepares, and you confirm each step on gage.cash.
 
 | To | Use |
 | --- | --- |
-| **Borrow** | quote a loan (`borrowQuote`), `borrow`, or `leverage` (a loop in one transaction, USDG only); `cancel` a listing no vault has funded yet |
+| **Borrow** | quote a loan at the lowest fixed cost the partner vaults accept (`borrowQuote`), `borrow`, or `leverage` (a loop in one transaction, USDG only); `cancel` a listing no vault has funded yet |
 | **Repay or move on** | `reclaim` (repay early, collateral back), `cash_out` (sell the collateral, repay, keep the rest), `roll` into a new loan, or `auto_roll` near the end of each term |
-| **Earn** | `earnVaults`, then `earn_deposit` and `earn_redeem` with the partner vaults that lend |
-| **Collect** | `collect`: loan credits, collateral back, vault earnings and sGAGE |
+| **Earn** | `earnVaults` and `vaultFreeCash`, then `earn_deposit` and `earn_redeem` with the partner vaults that lend; `earn_exit_now` sells one of a vault's loans for a holder it cannot pay now |
+| **Puts** | `putQuote` and `put_open` where a lend asset offers puts, then `put_close`, `put_roll`, `put_auto_roll` |
+| **LP lane** | fixed-cost USDG loans against Uniswap, SushiSwap, Ramses and Fables positions: `lpPositions`, `lpQuote`, `lp_borrow` and its thirteen other actions, LP vaults and curators |
+| **Park** | an out-of-range position into a partner vault and back (`park`, `unpark`), as one batch from the LP's wallet |
+| **Lend markets** | the stock tokens and stablecoins gage lends besides USDG (`lendAsset`), new stablecoin markets found on chain |
+| **Collect** | `collect`: loan credits, collateral back, vault earnings, exit sales and sGAGE |
 | **Look up** | `capabilities` (terms, fees, rules), `assets`, `loan`, `portfolio`, `balances`, `waitForFill` |
 | **Rate gage** | `feedback`: a score from 0 to 100 in ERC-8004, once a wallet |
 
@@ -86,21 +90,28 @@ your signer). `gageTools(gage)` gives your own agent framework the tools gage's 
 
 ## Examples
 
-[`packages/sdk/examples`](packages/sdk/examples), typechecked and tested in CI:
+[`packages/sdk/examples`](packages/sdk/examples) and [`packages/mcp/examples`](packages/mcp/examples), typechecked
+and tested in CI, every action they ask for checked against the schema the SDK takes:
 
 | Example | What it shows |
 | --- | --- |
-| [`quote.ts`](packages/sdk/examples/quote.ts) | What gage lends against now, and a quote. Reads only. |
-| [`deposit.ts`](packages/sdk/examples/deposit.ts) | A USDG deposit into a partner vault, with your own key. |
-| [`agent-tools.ts`](packages/sdk/examples/agent-tools.ts) | The tool catalogue for your own agent framework. |
+| [`reads.ts`](packages/sdk/examples/reads.ts), [`quote.ts`](packages/sdk/examples/quote.ts) | The market, a wallet, a loan, a quote. Reads only. |
+| [`borrow.ts`](packages/sdk/examples/borrow.ts) | One click at the lowest fixed cost, the exact quote, a loop, a refusal's minimum. |
+| [`loan.ts`](packages/sdk/examples/loan.ts) | Repay, roll over, roll over by itself, cash out. |
+| [`deposit.ts`](packages/sdk/examples/deposit.ts), [`exit-now.ts`](packages/sdk/examples/exit-now.ts) | A deposit into a partner vault; a withdrawal, exit now and collecting what it paid. |
+| [`put.ts`](packages/sdk/examples/put.ts), [`lp.ts`](packages/sdk/examples/lp.ts), [`park.ts`](packages/sdk/examples/park.ts) | Puts, the LP lane, park and unpark. |
+| [`generations.ts`](packages/sdk/examples/generations.ts) | Every asset gage lends, and a loan paid out in one. |
+| [`sign-yourself.ts`](packages/sdk/examples/sign-yourself.ts), [`spend-limit.ts`](packages/sdk/examples/spend-limit.ts) | Signing each prepared step with any wallet; a spend limit for an agent. |
+| [`agent-tools.ts`](packages/sdk/examples/agent-tools.ts), [`hosted-review.ts`](packages/sdk/examples/hosted-review.ts), [`stdio-client.ts`](packages/mcp/examples/stdio-client.ts) | Tools for your own agent framework, gage's hosted service and its review links, gage-mcp over stdio. |
 
 Run one from `packages/sdk` after `pnpm install && pnpm build`: `npx tsx examples/quote.ts NVDA`.
 
 ## Docs and changes
 
-- Guides: [the SDK](https://docs.gage.cash/ai-agents/sdk) and [the MCP servers](https://docs.gage.cash/ai-agents/mcp)
-  on docs.gage.cash
-- Reference: the [gage-sdk](packages/sdk/README.md) and [gage-mcp](packages/mcp/README.md) READMEs
+- Guides: [every integration path](packages/sdk/docs/README.md), each with its example, and on docs.gage.cash
+  [the SDK](https://docs.gage.cash/ai-agents/sdk) and [the MCP servers](https://docs.gage.cash/ai-agents/mcp)
+- Reference: [every method, action and tool](packages/sdk/docs/reference.md) (generated from the SDK itself), and the
+  [gage-sdk](packages/sdk/README.md) and [gage-mcp](packages/mcp/README.md) READMEs
 - Changes: [gage-sdk](packages/sdk/CHANGELOG.md) and [gage-mcp](packages/mcp/CHANGELOG.md) changelogs
 
 ## Develop
@@ -121,6 +132,13 @@ gage's main repository, where the contracts, the app and gage's services live, i
 Each release is copied here as one commit, and npm's copy is published from this repository with
 [provenance](https://docs.npmjs.com/generating-provenance-statements). Issues and pull requests are welcome: see
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Asking gage for something
+
+- **A token gage should accept:** [List a token](https://github.com/DebenLabs/gage-contracts/issues/new?template=token-listing.yml).
+- **An integration, a Rates API key, or your site's origin** for browser access to the rates service:
+  [Integrate with gage](https://github.com/DebenLabs/gage-contracts/issues/new?template=integration.yml). A key is sent to your private contact, never posted in an issue.
+- **Help with a loan, a deposit or the app:** [support](https://gage.cash/support). **The docs:** [docs.gage.cash](https://docs.gage.cash).
 
 ## Security
 

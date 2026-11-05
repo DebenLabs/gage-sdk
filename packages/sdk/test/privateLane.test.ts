@@ -28,16 +28,17 @@ const opening = (ids: bigint[], asked: unknown[] = [], over: Partial<Record<keyo
 });
 const LOAN_ACTIONS = ["cancel", "reclaim", "cash_out", "roll", "auto_roll", "cancel_auto_roll"] as const;
 const vault = { address: VAULT, creator: A(1), curator: A(1), core: CORE, categoryMask: 1, feeBps: 1000, maxLoanTerm: 1_814_400, assets: [NVDA], fundingEnabled: true };
-/** Loans 7 and 8 on the core, both repaid with their collateral still to take back, and a vault pocket from each. */
+/** Loans 7 and 8 on the core, both repaid with their collateral still to take back, and a vault pocket from each; with
+ * `backing`, the written-off loans' backing the index sums by loan (D414). */
 const book = (pockets: unknown[] = [
   { id: 1, kind: "RECOVERY", loanId: "7", token: USDG, claimable: "5000000", private: false },
   { id: 2, kind: "RECOVERY", loanId: "8", token: USDG, claimable: "7000000", private: false },
-]) => fakeUpstream({
+], backing?: unknown[]) => fakeUpstream({
   "/v2/positions?": (path: string) => ({ status: 200, body: {
     items: path.includes(`engine=${CORE}`) ? ["7", "8"].map((id) => position(id, {}, { state: 3, collateralBeneficiary: WALLET })) : [], nextCursor: null,
   } }),
   "/intent/partners/vaults?": { items: [vault], nextCursor: null },
-  "/intent/partners/vaults/": { shares: "1", value: "1", withdrawableNow: "1", rewards: "0", pockets },
+  "/intent/partners/vaults/": { shares: "1", value: "1", withdrawableNow: "1", rewards: "0", pockets, ...(backing ? { backing } : {}) },
 });
 const repaid = { loan: () => Promise.resolve(chainLoan({ state: 3, collateralBeneficiary: WALLET })) };
 
@@ -130,6 +131,42 @@ describe("a loan the chain bears out as public", () => {
   it("still needs the index's own marker: both must say public", async () => {
     for (const flag of [{ private: true }, { private: undefined }]) {
       expect(await code(loan(ctx({ d: lane(), indexer: fakeUpstream({ "/v2/positions/": position("7", flag) }), chain: opening([]) }), { loanId: "7" }))).toBe("NOT_FOUND");
+    }
+  });
+
+  it("asks about each loan once, however many backing pockets a written-off loan carries (D404)", async () => {
+    const asked: unknown[] = [];
+    // 4,097 one-USDG backing pockets of loan 9 and a recovery pocket of loan 8, the chain bearing both loans out.
+    const backing = Array.from({ length: 4_097 }, (_, i) => ({ id: 3 + i, kind: "RECAPITALIZATION", loanId: "9", token: USDG, claimable: "666666", private: false }));
+    const pockets = [{ id: 1, kind: "RECOVERY", loanId: "8", token: USDG, claimable: "7000000", private: false }, ...backing];
+    const p = await portfolio(ctx({ d: lane(), indexer: book(pockets), chain: opening([], asked) }), WALLET);
+    expect(p.earn.map((e) => e.claimsReady)).toEqual([4_098]);
+    // The wallet's loans 7 and 8, then the pockets' loans 8 and 9: one call each, every loan named once.
+    expect(asked).toEqual([[getAddress(CORE), [getAddress(PRIVATE_ROUTER)], [7n, 8n]], [getAddress(CORE), [getAddress(PRIVATE_ROUTER)], [8n, 9n]]]);
+    // A private loan still leaves every pocket of it out.
+    const lanes = await portfolio(ctx({ d: lane(), indexer: book(pockets), chain: opening([9n]) }), WALLET);
+    expect(lanes.earn.map((e) => e.claimsReady)).toEqual([1]);
+  });
+
+  it("counts a loan's backing the index sums, held to the chain by its loan, as one pocket asks (D414)", async () => {
+    const asked: unknown[] = [];
+    // The same vault from an index that sums backing by loan: 4,097 pockets, the next claim the oldest 64.
+    const backing = [{
+      loanId: "9", token: USDG, pockets: 4_097, claimable: String(4_097n * 666_666n),
+      next: { ids: Array.from({ length: 64 }, (_, i) => 3 + i), claimable: String(64n * 666_666n) }, private: false,
+    }];
+    const pockets = [{ id: 1, kind: "RECOVERY", loanId: "8", token: USDG, claimable: "7000000", private: false }];
+    const p = await portfolio(ctx({ d: lane(), indexer: book(pockets, backing), chain: opening([], asked) }), WALLET);
+    expect(p.earn.map((e) => e.claimsReady)).toEqual([4_098]);
+    expect(asked).toEqual([[getAddress(CORE), [getAddress(PRIVATE_ROUTER)], [7n, 8n]], [getAddress(CORE), [getAddress(PRIVATE_ROUTER)], [8n, 9n]]]);
+    // Backing of a loan the lane opened is left out whole, as is backing the index marks private or cannot tell of.
+    for (const [chain, entries] of [
+      [opening([9n]), backing],
+      [opening([]), [{ ...backing[0], private: true }]],
+      [opening([]), [{ ...backing[0], private: undefined }]],
+    ] as const) {
+      const lanes = await portfolio(ctx({ d: lane(), indexer: book(pockets, [...entries]), chain }), WALLET);
+      expect(lanes.earn.map((e) => e.claimsReady)).toEqual([1]);
     }
   });
 

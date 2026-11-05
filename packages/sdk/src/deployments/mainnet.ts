@@ -3,6 +3,7 @@
 export const MAINNET_MANIFEST = {
   "chainId": 4663,
   "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "WETH": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
   "StateView": "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
   "nativeV2": {
     "engines": [
@@ -33,6 +34,13 @@ export const MAINNET_MANIFEST = {
         "rewards": "0x5f653337f0B017aa60dbF977Cbc4e48Aa71ffA3c",
         "name": "Intent V1, r9 code (Pashov final fixes, I-04 tenth-unit floor)",
         "cashoutRouter": "0x3e7dc9bd908f5ba5aae43238c915e4f28a073ea7"
+      },
+      {
+        "engine": "0x0086ec1540719d4199432797e2b6068e6ae5a0e5",
+        "registry": "0x732fb25c6905d0cbeb639f1226398ab317189ba0",
+        "rewards": "0x614E087972d49DFe6FEDbaC1333192313aF36aD9",
+        "name": "Intent V1, r13 code (the SEC-01 exit desk, D390 and D391)",
+        "cashoutRouter": "0xfa91ee9221300e034916400da4c4fc556633ae15"
       }
     ],
     "assets": [
@@ -1701,13 +1709,23 @@ export const MAINNET_MANIFEST = {
     ]
   },
   "intentV1": {
-    "core": "0x856e4232469b957150cb29a8ce9b60059449e87e",
-    "factory": "0x20a908d82885cf4e990a9f8f3f5a483687660822",
-    "loopRouter": "0xacfffd412dd838d3ede489bc4b79e19505769bad",
-    "rolloverRouter": "0x85829427103E33F3c8D6B06Ebb3aAd7185b0feDa",
+    "core": "0x0086ec1540719d4199432797e2b6068e6ae5a0e5",
+    "factory": "0xb086944b140758b33694220d4fe93c9a8d8618a1",
+    "loopRouter": "0xa46b62d5277465a885de5f2dc518d369199aa93c",
+    "rolloverRouter": "0x3bee806F87386e71713516bA0b91dAE21D576f72",
     "public": true,
-    "privateRouter": "0xc62DA1872bf3C9922e8C22Be4b29b5317b4bAa21"
+    "privateRouter": "0xDbb8e949659D0d0d2EDB075b9eC84C9E479bAA45",
+    "exitDesk": "0x0c7e23f245377551a7fac3b3d05238ac2e9eefc2",
+    "previousPrivateLanes": [
+      {
+        "core": "0x856e4232469b957150cb29a8ce9b60059449e87e",
+        "routers": [
+          "0xc62da1872bf3c9922e8c22be4b29b5317b4baa21"
+        ]
+      }
+    ]
   },
+  "intentV1IndexerUrl": "https://indexer-production-a5e5.up.railway.app",
   "intentV1Assets": {
     "GLD": {
       "lendAsset": {
@@ -1717,19 +1735,32 @@ export const MAINNET_MANIFEST = {
         "stable": false
       },
       "public": true,
-      "factory": "0x0966d92887d41796fcf6f77159d543b1565fec0d",
-      "core": "0xf2b98f79040b4157373093cdda2a4f2cb3c838d8",
-      "rolloverRouter": "0x87A8C18c63A7f5957cB533389c20b80962d4E8A8",
+      "factory": "0x2a09498f11a70c4f2ab0a4e1b3323699bf7cc143",
+      "core": "0x1e8bd7348c84ab0a0fabe61dca1249f75b4e9275",
+      "rolloverRouter": "0xb078114872369a5f43E9b8548C501dbb88ef84ac",
+      "exitDesk": "0x0c7e23f245377551a7fac3b3d05238ac2e9eefc2",
+      "indexerUrl": "https://indexer-production-a5e5.up.railway.app",
       "engine": {
-        "registry": "0x1b7208b92586fbf7eb246234832530efdecfeb86",
-        "rewards": "0x24772Df730EEed3961b4712e99F33Cf0fe257A7E",
-        "cashoutRouter": "0x4fb133edc4b72b81b2804b00b4e843ad34deca84"
+        "registry": "0x79e64d21f0514bc5aaafc332d1a1096f0368ae4c",
+        "rewards": "0xa83939Ff28EcdB75D96C653717CF07a638ecA4Af",
+        "cashoutRouter": "0x2d89e340e2ef83729fb6dc9da61e425fa0e46d70"
       },
       "collateral": [
         {
           "symbol": "SCHIFFY",
           "token": "0x42aFA2124ca5a2B83898E46B2dA9a190995b1E18",
           "category": "MEME"
+        }
+      ],
+      "cashoutPools": [
+        {
+          "protocol": "v4",
+          "currency0": "0x42afa2124ca5a2b83898e46b2da9a190995b1e18",
+          "currency1": "0xc9a981fee1f9dec688bb123ccdecc63d0debfc4e",
+          "fee": 8388608,
+          "tickSpacing": 8,
+          "hooks": "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544",
+          "poolId": "0xc749412e31087a6e6f9210af575bc9100159fbc9f45da3ca8b26b31f3bf5777e"
         }
       ]
     },
@@ -1741,19 +1772,49 @@ export const MAINNET_MANIFEST = {
         "stable": false
       },
       "public": true,
-      "factory": "0xcb848a80801bfcdb7fa43a6729013ecf319a000b",
-      "core": "0x380a536b1c8bf9e8c1035413497f767f76d30b6e",
-      "rolloverRouter": "0x5d1308A9B8FBe849053E4Fc8E8BE9cD1a5c1D492",
+      "factory": "0xd1fc8951289372c7260ac0f7bc830baba49f109c",
+      "core": "0xe0ddd6869677d3f5a2bc48375fc899b10a6848e1",
+      "rolloverRouter": "0xB47D90C6af419353536E023Ae00D132c68226c40",
+      "loopRouter": "0xe5A69a1DEd8437bbFDe19263B626aAE4Ec1f09cf",
+      "putRouter": "0x93D6665D881a2DB7d054dBD271dF513dAa52ec99",
+      "exitDesk": "0x0c7e23f245377551a7fac3b3d05238ac2e9eefc2",
+      "indexerUrl": "https://indexer-production-a5e5.up.railway.app",
       "engine": {
-        "registry": "0x8c73694f6394cb2054307b02646e2399a7f54045",
-        "rewards": "0x5f0359CEE3f48cDa6afD4De2a111b62dfde51908",
-        "cashoutRouter": "0xdc5c966e05279fb860b4986c7483e431f1a3d482"
+        "registry": "0x1897cb1bfc61507259073086810f94bcfb609955",
+        "rewards": "0x25c3976ca28D2B9265050D290a58dF46864A2D5d",
+        "cashoutRouter": "0xf30ad2ed957e74d36774168c63dfc43c8b025e91"
       },
       "collateral": [
         {
           "symbol": "AI",
           "token": "0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18",
           "category": "MEME"
+        },
+        {
+          "symbol": "USDG",
+          "token": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+          "category": "RH_ECOSYSTEM"
+        }
+      ],
+      "cashoutPools": [
+        {
+          "protocol": "v4",
+          "currency0": "0x2e8c31162b855a2ffa90f6f8634643ad6f111e18",
+          "currency1": "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec",
+          "fee": 8388608,
+          "tickSpacing": 8,
+          "hooks": "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544",
+          "poolId": "0xcbdfea90430a30ee4469c9902e120a77e7c7e4711d5643671c1d1957f2f1ce27"
+        },
+        {
+          "protocol": "v3",
+          "poolAddress": "0xd4eb21209c4d6093f80b5b84f5c45cc093ea14a3",
+          "currency0": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+          "currency1": "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec",
+          "fee": 500,
+          "tickSpacing": 10,
+          "hooks": "0x0000000000000000000000000000000000000000",
+          "poolId": "0x000000000000000000000000d4eb21209c4d6093f80b5b84f5c45cc093ea14a3"
         }
       ]
     },
@@ -1765,13 +1826,15 @@ export const MAINNET_MANIFEST = {
         "stable": false
       },
       "public": true,
-      "factory": "0x48a234770e74d907071b8d310f06cf253a846e9d",
-      "core": "0x359bb9751f5c2cfdce5d034a9742e7a0a3ac8e54",
-      "rolloverRouter": "0x6b563aD0058c369472968D64c3D4Ad63C86c6513",
+      "factory": "0x76030f3fd8631a2839d79fefbf5eff124229734a",
+      "core": "0xc64c71f1a989e1830948d1adcb43a2b5f5a8dba1",
+      "rolloverRouter": "0xa27F40174B6293252E0FDbCFf8c3B50868156EE0",
+      "exitDesk": "0x0c7e23f245377551a7fac3b3d05238ac2e9eefc2",
+      "indexerUrl": "https://indexer-production-a5e5.up.railway.app",
       "engine": {
-        "registry": "0x0b07d49dbfb4f6932e4f11bd0b74d5f9adc5dd59",
-        "rewards": "0x50EDf2Be5C6dA2cF82BB853DD008639A180309F3",
-        "cashoutRouter": "0x4a9ef39ca35ff26e4f21099e8dd8914c1df8bb14"
+        "registry": "0xa077b4d108544efe90e9d6d1348c3e6c3e071bb1",
+        "rewards": "0x4BEa4A533Ef7463fc67565b9Ac96F7eE1AF93AE2",
+        "cashoutRouter": "0xf092da59586b0bbdf9eb9b9c68234887c83ed473"
       },
       "collateral": [
         {
@@ -1779,10 +1842,159 @@ export const MAINNET_MANIFEST = {
           "token": "0x98096d17e191B3dA1d5f99a6D7b3584351b11E18",
           "category": "MEME"
         }
+      ],
+      "cashoutPools": [
+        {
+          "protocol": "v4",
+          "currency0": "0x98096d17e191b3da1d5f99a6d7b3584351b11e18",
+          "currency1": "0xccee82fe024c36fa15e1005ede3e9e4787e23d09",
+          "fee": 8388608,
+          "tickSpacing": 8,
+          "hooks": "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544",
+          "poolId": "0x9c89b04303dfa76f3f6fb02c2b77be0e8a00ab8fa00d507119acd54ab3e8640d"
+        }
       ]
     }
   },
-  "rolloverExecutor": "0xd2Ce883E5472d21EB264af5A184223b9A0402081",
+  "intentV1Previous": [
+    {
+      "intentV1": {
+        "core": "0x856e4232469b957150cb29a8ce9b60059449e87e",
+        "factory": "0x20a908d82885cf4e990a9f8f3f5a483687660822"
+      },
+      "intentV1IndexerUrl": "https://retained-r9-indexer-mainnet.up.railway.app"
+    }
+  ],
+  "intentV1AssetsPrevious": {
+    "GLD": [
+      {
+        "entry": {
+          "lendAsset": {
+            "token": "0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e",
+            "symbol": "GLD",
+            "decimals": 18,
+            "stable": false
+          },
+          "public": true,
+          "factory": "0x0966d92887d41796fcf6f77159d543b1565fec0d",
+          "core": "0xf2b98f79040b4157373093cdda2a4f2cb3c838d8",
+          "rolloverRouter": "0x87A8C18c63A7f5957cB533389c20b80962d4E8A8",
+          "indexerUrl": "https://retained-r9-indexer-mainnet.up.railway.app",
+          "engine": {
+            "registry": "0x1b7208b92586fbf7eb246234832530efdecfeb86",
+            "rewards": "0x24772Df730EEed3961b4712e99F33Cf0fe257A7E",
+            "cashoutRouter": "0x4fb133edc4b72b81b2804b00b4e843ad34deca84"
+          },
+          "collateral": [
+            {
+              "symbol": "SCHIFFY",
+              "token": "0x42aFA2124ca5a2B83898E46B2dA9a190995b1E18",
+              "category": "MEME"
+            }
+          ],
+          "cashoutPools": [
+            {
+              "protocol": "v4",
+              "currency0": "0x42afa2124ca5a2b83898e46b2da9a190995b1e18",
+              "currency1": "0xc9a981fee1f9dec688bb123ccdecc63d0debfc4e",
+              "fee": 8388608,
+              "tickSpacing": 8,
+              "hooks": "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544",
+              "poolId": "0xc749412e31087a6e6f9210af575bc9100159fbc9f45da3ca8b26b31f3bf5777e"
+            }
+          ]
+        },
+        "indexerUrl": "https://retained-r9-indexer-mainnet.up.railway.app"
+      }
+    ],
+    "NVDA": [
+      {
+        "entry": {
+          "lendAsset": {
+            "token": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+            "symbol": "NVDA",
+            "decimals": 18,
+            "stable": false
+          },
+          "public": true,
+          "factory": "0xcb848a80801bfcdb7fa43a6729013ecf319a000b",
+          "core": "0x380a536b1c8bf9e8c1035413497f767f76d30b6e",
+          "rolloverRouter": "0x5d1308A9B8FBe849053E4Fc8E8BE9cD1a5c1D492",
+          "indexerUrl": "https://retained-r9-indexer-mainnet.up.railway.app",
+          "engine": {
+            "registry": "0x8c73694f6394cb2054307b02646e2399a7f54045",
+            "rewards": "0x5f0359CEE3f48cDa6afD4De2a111b62dfde51908",
+            "cashoutRouter": "0xdc5c966e05279fb860b4986c7483e431f1a3d482"
+          },
+          "collateral": [
+            {
+              "symbol": "AI",
+              "token": "0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18",
+              "category": "MEME"
+            }
+          ],
+          "cashoutPools": [
+            {
+              "protocol": "v4",
+              "currency0": "0x2e8c31162b855a2ffa90f6f8634643ad6f111e18",
+              "currency1": "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec",
+              "fee": 8388608,
+              "tickSpacing": 8,
+              "hooks": "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544",
+              "poolId": "0xcbdfea90430a30ee4469c9902e120a77e7c7e4711d5643671c1d1957f2f1ce27"
+            }
+          ]
+        },
+        "indexerUrl": "https://retained-r9-indexer-mainnet.up.railway.app"
+      }
+    ],
+    "HIMS": [
+      {
+        "entry": {
+          "lendAsset": {
+            "token": "0xCceE82fE024c36fA15E1005edE3E9e4787e23D09",
+            "symbol": "HIMS",
+            "decimals": 18,
+            "stable": false
+          },
+          "public": true,
+          "factory": "0x48a234770e74d907071b8d310f06cf253a846e9d",
+          "core": "0x359bb9751f5c2cfdce5d034a9742e7a0a3ac8e54",
+          "rolloverRouter": "0x6b563aD0058c369472968D64c3D4Ad63C86c6513",
+          "indexerUrl": "https://retained-r9-indexer-mainnet.up.railway.app",
+          "engine": {
+            "registry": "0x0b07d49dbfb4f6932e4f11bd0b74d5f9adc5dd59",
+            "rewards": "0x50EDf2Be5C6dA2cF82BB853DD008639A180309F3",
+            "cashoutRouter": "0x4a9ef39ca35ff26e4f21099e8dd8914c1df8bb14"
+          },
+          "collateral": [
+            {
+              "symbol": "BONER",
+              "token": "0x98096d17e191B3dA1d5f99a6D7b3584351b11E18",
+              "category": "MEME"
+            }
+          ],
+          "cashoutPools": [
+            {
+              "protocol": "v4",
+              "currency0": "0x98096d17e191b3da1d5f99a6d7b3584351b11e18",
+              "currency1": "0xccee82fe024c36fa15e1005ede3e9e4787e23d09",
+              "fee": 8388608,
+              "tickSpacing": 8,
+              "hooks": "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544",
+              "poolId": "0x9c89b04303dfa76f3f6fb02c2b77be0e8a00ab8fa00d507119acd54ab3e8640d"
+            }
+          ]
+        },
+        "indexerUrl": "https://retained-r9-indexer-mainnet.up.railway.app"
+      }
+    ]
+  },
+  "rolloverExecutor": "0xCB14554904b86b3472F960740aE377b5b711A659",
+  "generationDeployer": {
+    "address": "0xcea38204C97e9745f831978357d562E5CcC6834F",
+    "startBlock": 106649281
+  },
   "pools": {
     "spyUsdg": {
       "currency0": "0x117cc2133c37b721f49de2a7a74833232b3b4c0c",
@@ -2464,5 +2676,191 @@ export const MAINNET_MANIFEST = {
       "hooks": "0x0000000000000000000000000000000000000000",
       "poolId": "0x680eb556f5d466e1fee8468b93cbdd6c426e2136c369a6ab70ca36a5204cd471"
     }
+  },
+  "lpLane": {
+    "public": true,
+    "startBlock": 106258379,
+    "core": "0x8EDedDadA6be6C81cD838a028910ADDA29365c50",
+    "registry": "0xdFCFe33eB08E63dD1f8B7cBCd49f5E960BC85bBC",
+    "vaultFactory": "0xDDd6afeA325F20Bba4Df0A5a7DB307524bbcbF77",
+    "vaults": [],
+    "adapters": [
+      {
+        "kind": "uniswap-v3",
+        "address": "0x6cEE9304e8f759Edf6BadCdE1d64b01Fb022872a",
+        "positionManager": "0x73991a25C818Bf1f1128dEAaB1492D45638DE0D3",
+        "factory": "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA"
+      },
+      {
+        "kind": "ramses-v3",
+        "address": "0xdc2001A57912164Ecb8139b7D3121955AE3A9320",
+        "positionManager": "0x2eBd7B85a4E08D5B508b04BA147976C94afE6590",
+        "factory": "0xE0c4ceb92d08CA985bB70fe0a22fEb121A9854A8"
+      },
+      {
+        "kind": "uniswap-v3",
+        "address": "0xd9aF6b4BCf9eE6b0bF84279C8d1FD72071cdF2e8",
+        "positionManager": "0x51d0e5188afe12d502e29D982d20C190e7816107",
+        "factory": "0xE51960f1B45f1C9FB6D166E6a884F866fC70433B"
+      },
+      {
+        "kind": "uniswap-v4",
+        "address": "0xc3dE275A11e0B3783770882F5c4E640eaE45833C",
+        "positionManager": "0x58daec3116aae6D93017bAAea7749052E8a04fA7",
+        "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951"
+      },
+      {
+        "kind": "fables",
+        "address": "0xbaFCd70B060ed26F5a2Cb67e43fe030Cf8981793",
+        "positionManager": "0x1a8e8F0aab1C9e58827D86EbAE29Bc3e79CC1B2b",
+        "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+        "hook": "0x06a889870C8f83640D6816319f72e2aA579b6080"
+      }
+    ],
+    "executors": [
+      {
+        "address": "0xd5309aB57BdfaEF1491dB0c91D5c4d1D4c8d814F",
+        "token": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "kind": "one-pool",
+        "pools": [
+          "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca"
+        ]
+      },
+      {
+        "address": "0x8Cd6E727C3679649bae14CE9d223E837B906852b",
+        "token": "0x5173D45A1191eE33cBB7D8c7e65f21B04eD54802",
+        "kind": "two-hop",
+        "pools": [
+          "0x5860dD468B4FC1740EaF80a3b7F22e78D70a076a",
+          "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca"
+        ]
+      },
+      {
+        "address": "0x1035E23DF3ac7bf9693dbB5a9F3C0eFe2C2760ad",
+        "token": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+        "kind": "one-pool",
+        "pools": [
+          "0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3"
+        ]
+      },
+      {
+        "address": "0xa26570618E08218BF3fFd5bB96382D72Eb2F2ECe",
+        "token": "0x117cc2133c37B721F49dE2A7a74833232B3B4C0C",
+        "kind": "v4-one-pool",
+        "pools": [
+          "0x6d45bf5bA67443dDB1435e28B2E48dF2Fc1526cD"
+        ],
+        "poolId": "0xfe2a80bb5618fd14984b92ca6d45bf5ba67443ddb1435e28b2e48df2fc1526cd"
+      },
+      {
+        "address": "0xEC03f72f59e68b4757c6Ef17295Ae1c18dfD4A46",
+        "token": "0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e",
+        "kind": "one-pool",
+        "pools": [
+          "0x7A6A053eCCf1446A2633E05aA6D40D09381997ec"
+        ]
+      }
+    ],
+    "pools": [
+      {
+        "adapter": "0xdc2001A57912164Ecb8139b7D3121955AE3A9320",
+        "pool": "0xFAE65eAa11943f45E83D5B45DC7A7C801C51bfB0",
+        "token0": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "token1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 175,
+        "tickSpacing": 1,
+        "name": "Ramses WETH/USDG"
+      },
+      {
+        "adapter": "0x6cEE9304e8f759Edf6BadCdE1d64b01Fb022872a",
+        "pool": "0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a",
+        "token0": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "token1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 500,
+        "tickSpacing": 10,
+        "name": "Uniswap v3 WETH/USDG 0.05%"
+      },
+      {
+        "adapter": "0x6cEE9304e8f759Edf6BadCdE1d64b01Fb022872a",
+        "pool": "0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca",
+        "token0": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "token1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 100,
+        "tickSpacing": 1,
+        "name": "Uniswap v3 WETH/USDG 0.01%"
+      },
+      {
+        "adapter": "0xd9aF6b4BCf9eE6b0bF84279C8d1FD72071cdF2e8",
+        "pool": "0x9B050cb1F265094b0977160a2BD7dA8C9E529c3C",
+        "token0": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "token1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 500,
+        "tickSpacing": 10,
+        "name": "SushiSwap v3 WETH/USDG 0.05%"
+      },
+      {
+        "adapter": "0xc3dE275A11e0B3783770882F5c4E640eaE45833C",
+        "pool": "0x2693Dba1b9B3520f573CABdfe033384a24125982",
+        "token0": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "token1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 500,
+        "tickSpacing": 10,
+        "name": "Uniswap v4 ETH/USDG 0.05%",
+        "poolId": "0x387bf619da4d3fb62bb276482693dba1b9b3520f573cabdfe033384a24125982",
+        "native": true,
+        "hooks": "0x0000000000000000000000000000000000000000"
+      },
+      {
+        "adapter": "0xbaFCd70B060ed26F5a2Cb67e43fe030Cf8981793",
+        "pool": "0x99a56756E954e59247E497bad1D25A4334BdE551",
+        "token0": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "token1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 8388608,
+        "tickSpacing": 10,
+        "name": "Fables ETH/USDG",
+        "poolId": "0xbac3aa3b91584a53a579b3c999a56756e954e59247e497bad1d25a4334bde551",
+        "native": true,
+        "hooks": "0x06a889870C8f83640D6816319f72e2aA579b6080"
+      },
+      {
+        "adapter": "0x6cEE9304e8f759Edf6BadCdE1d64b01Fb022872a",
+        "pool": "0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3",
+        "token0": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "token1": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+        "fee": 500,
+        "tickSpacing": 10,
+        "name": "Uniswap v3 NVDA/USDG 0.05%"
+      },
+      {
+        "adapter": "0xc3dE275A11e0B3783770882F5c4E640eaE45833C",
+        "pool": "0x6d45bf5bA67443dDB1435e28B2E48dF2Fc1526cD",
+        "token0": "0x117cc2133c37B721F49dE2A7a74833232B3B4C0C",
+        "token1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "name": "Uniswap v4 SPY/USDG 0.3%",
+        "poolId": "0xfe2a80bb5618fd14984b92ca6d45bf5ba67443ddb1435e28b2e48df2fc1526cd",
+        "native": false,
+        "hooks": "0x0000000000000000000000000000000000000000"
+      },
+      {
+        "adapter": "0x6cEE9304e8f759Edf6BadCdE1d64b01Fb022872a",
+        "pool": "0x7A6A053eCCf1446A2633E05aA6D40D09381997ec",
+        "token0": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "token1": "0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "name": "Uniswap v3 GLD/USDG 0.3%"
+      },
+      {
+        "adapter": "0x6cEE9304e8f759Edf6BadCdE1d64b01Fb022872a",
+        "pool": "0xBA2f1ed4cEB2169D538d1e614D847E83C5A55913",
+        "token0": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "token1": "0xC9a981FEE1F9DEc688bb123ccDeCc63D0deBFC4e",
+        "fee": 500,
+        "tickSpacing": 10,
+        "name": "Uniswap v3 GLD/USDG 0.05%"
+      }
+    ]
   }
 } as const;

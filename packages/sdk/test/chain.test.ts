@@ -1,6 +1,6 @@
-import { zeroAddress } from "viem";
+import { BaseError, ContractFunctionExecutionError, ContractFunctionRevertedError, zeroAddress } from "viem";
 import { describe, expect, it } from "vitest";
-import { privateLoansFrom, succeeded } from "../src/chain.js";
+import { exitDebitFrom, exitFloorFrom, exitSharesFrom, privateLoansFrom, succeeded } from "../src/chain.js";
 import { CORE, NVDA, OTHER } from "../src/testing.js";
 
 const SENT = `0x${"a".repeat(64)}` as const, OTHER_TX = `0x${"b".repeat(64)}` as const;
@@ -35,5 +35,50 @@ describe("what one block's reads say of a loan's private lane", () => {
     expect(privateLoansFrom(CORE, 1, [8n], [ok(9n), ok(CORE), failed])).toEqual([null]);
     expect(privateLoansFrom(CORE, 1, [0n], [ok(9n), ok(CORE), none])).toEqual([null]);
     expect(privateLoansFrom(CORE, 1, [8n], [ok(9n), ok(CORE)])).toEqual([null]);
+  });
+});
+
+// SEC-01 (root D391): the share views' `exitShare` and the desk's `exitDebit`, as one block's multicall answers them.
+describe("what the share views and the exit desk answer of an exit sale's discount", () => {
+  const ok = (result: unknown) => ({ status: "success", result });
+  /** A read the contract refused with no data, as viem's multicall gives it: what views or a desk before D391 answer. */
+  const empty = (functionName: string) => ({ status: "failure", error: new ContractFunctionExecutionError(
+    new ContractFunctionRevertedError({ abi: [], data: "0x", functionName }), { abi: [], functionName }) });
+  /** A node's refusal of the whole multicall (rate limit, internal error, a header it lacks): viem gives every read it. */
+  const node = { status: "failure", error: new ContractFunctionExecutionError(new BaseError("limit exceeded"), { abi: [], functionName: "aggregate3" }) };
+  /** A -32603 with no data, which viem files as a revert, though nothing reverted. */
+  const internal = (functionName: string) => ({ status: "failure", error: new ContractFunctionExecutionError(
+    new ContractFunctionRevertedError({ abi: [], functionName, message: "internal error" }), { abi: [], functionName }) });
+
+  it("reads each holding's exposure and supply in order, and none at all where a read reverted with no data (share views before D391)", () => {
+    expect(exitSharesFrom([ok([3n, 10n]), ok([0n, 0n])])).toEqual([{ exposure: 3n, supply: 10n }, { exposure: 0n, supply: 0n }]);
+    expect(exitSharesFrom([])).toEqual([]);
+    expect(exitSharesFrom([ok([3n, 10n]), empty("exitShare")])).toBeNull();
+  });
+
+  it("fails the read on a node's refusal, a revert that is not empty, or an answer that is no pair of amounts (SEC-01 review)", () => {
+    expect(() => exitSharesFrom([node, node])).toThrow("limit exceeded");
+    expect(() => exitSharesFrom([ok([3n, 10n]), internal("exitShare")])).toThrow();
+    expect(() => exitSharesFrom([{ status: "failure" }])).toThrow();
+    expect(() => exitSharesFrom([ok([3n])])).toThrow();
+    expect(() => exitSharesFrom([ok(["3", 10n])])).toThrow();
+  });
+
+  it("reads what a sale charged its leaver, zero for none, and nothing from a desk before D391; any other failure fails", () => {
+    expect(exitDebitFrom(ok([OTHER, 5n]))).toEqual({ owner: OTHER, debit: 5n });
+    expect(exitDebitFrom(ok([zeroAddress, 0n]))).toEqual({ owner: zeroAddress, debit: 0n });
+    expect(exitDebitFrom(empty("exitDebit"))).toBeNull();
+    expect(() => exitDebitFrom(node)).toThrow("limit exceeded");
+    expect(() => exitDebitFrom(internal("exitDebit"))).toThrow();
+    expect(() => exitDebitFrom(undefined)).toThrow();
+    expect(() => exitDebitFrom(ok([OTHER]))).toThrow();
+  });
+
+  it("reads where the desk stops a listing for an owner, nothing from a desk before D391, and fails on anything else (SEC-01 review)", () => {
+    expect(exitFloorFrom(ok(4_950n))).toBe(4_950);
+    expect(exitFloorFrom(empty("floorOf"))).toBeNull();
+    expect(() => exitFloorFrom(node)).toThrow("limit exceeded");
+    expect(() => exitFloorFrom(internal("floorOf"))).toThrow();
+    expect(() => exitFloorFrom(ok(9_901n))).toThrow();
   });
 });
