@@ -1,5 +1,5 @@
 /**
- * The LP lane (docs/api.md "LP lane", D314, D315): fixed-cost USDG loans against a Uniswap v3, SushiSwap v3 or Ramses V3
+ * The LP lane (docs/api.md "LP lane", D314, D315): fixed-cost USDG loans against a Uniswap v3, SushiSwap v3, Ouro v3 or Ramses V3
  * WETH/USDG position, or a Uniswap v4 ETH/USDG one, through the lane's own core, registry, vaults and position adapters,
  * never an Intent generation. There is no liquidation: a loan is never closed early because a price moves, and one not
  * repaid by its end is settled by unwinding the position for its lenders. Served only where the release makes the lane
@@ -9,7 +9,7 @@
  */
 import { getAddress, type Address, type Hex } from "viem";
 import { z } from "zod";
-import type { LpFacts, LpLoan, LpMandatePool } from "./chain.js";
+import type { LpFacts, LpLoan, LpMandatePool, LpReserveState } from "./chain.js";
 import { LP_V4_KINDS, lpAdapterOf, lpPoolOf, lpVaultOf, type LpAdapter, type LpAdapterKind, type LpLane, type LpPool, type PoolKey } from "./deployment.js";
 import { ApiError, requireThat } from "./errors.js";
 import * as f from "./format.js";
@@ -30,10 +30,10 @@ export const MAX_LP_POSITIONS = 100;
 export const QUOTE_MARGIN = 60;
 
 /**
- * The position formats the lane takes, in plain words: its adapters' (SushiSwap v3's positions on the Uniswap v3
+ * The position formats the lane takes, in plain words: its adapters' (SushiSwap v3's and Ouro v3's positions on the Uniswap v3
  * adapter; Fables receipts once wrapped as a position, D316).
  */
-export const LP_FORMATS = "Uniswap v3 or v4, SushiSwap v3, Ramses or Fables";
+export const LP_FORMATS = "Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables";
 /** What the LP lane is, said once its switch is on, with no liquidation's definition (the design brief's words). */
 export const LP_RULE =
   `An LP loan (lp_borrow) lends USDG at a fixed cost against an ETH/USDG or stock/USDG liquidity position on ${LP_FORMATS}, in a pool the lane lists, which waits in its own escrow while the loan runs (Fables receipts are wrapped into a position first). There is no liquidation: the loan is never closed early because a price moves. Before its end it may be repaid, or rolled into a new loan on the same position (lp_roll). If it is not repaid by its end, the position is unwound for its lenders, and nothing else is taken from the borrower.`;
@@ -41,7 +41,7 @@ export const LP_RULE =
 /**
  * What pledging a position does besides, in plain words, where its format does more: Uniswap v4's PositionManager
  * unsubscribes a position it moves (a rewards program that tracks it stops counting it), and a native ETH pool's fees
- * are collected as WETH. None for a Uniswap v3, SushiSwap v3 or Ramses position.
+ * are collected as WETH. None for a Uniswap v3, SushiSwap v3, Ouro v3 or Ramses position.
  */
 export function positionNotes(kind: LpAdapterKind, pool: Pick<LpPool, "native"> | null): string[] {
   return [
@@ -53,6 +53,7 @@ export function positionNotes(kind: LpAdapterKind, pool: Pick<LpPool, "native"> 
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const rawStr = (v: bigint) => v.toString();
+const orNull = (v: bigint | null) => (v === null ? null : rawStr(v));
 
 /** The public LP lane, refused where the release names none or keeps it hidden. */
 export function laneOf(c: Pick<Ctx, "d">): LpLane {
@@ -140,8 +141,7 @@ export async function tokenRefs(c: Pick<Ctx, "d" | "chain">, tokens: readonly Ad
     if (same(token, c.d.usdg)) return { token, symbol: "USDG", decimals: 6 };
     try {
       const { symbol, decimals } = await c.chain.tokenInfo(token);
-      // A token's own symbol is data, never words: kept short and plain, else none.
-      return { token, symbol: /^[A-Za-z0-9.$_-]{1,16}$/.test(symbol) ? symbol : "tokens", decimals };
+      return { token, symbol: f.plainSymbol(symbol) || "tokens", decimals };
     } catch { return { token, symbol: "tokens", decimals: 18 }; }
   }));
   return new Map(refs.map((r) => [r.token.toLowerCase(), r]));
@@ -320,7 +320,7 @@ export async function askQuote(c: Pick<Ctx, "d" | "chain" | "rates" | "now">, la
   let roll: SignedLpQuote["roll"] = null;
   if (ask.rolling) {
     const r = b.roll, owed = ask.rolling.repayment, net = quote.principal - feeOf(quote.principal, quote.feeBps) - owed;
-    if (!r || BigInt(r.loanId) !== ask.rolling.id || BigInt(r.owed) !== owed || BigInt(r.net) !== net || BigInt(c.now()) >= BigInt(ask.rolling.end)) throw mismatch();
+    if (!r || BigInt(r.loanId) !== ask.rolling.id || BigInt(r.owed) !== owed || BigInt(r.net) !== net || BigInt((await c.chain.head()).timestamp) >= BigInt(ask.rolling.end)) throw mismatch();
     roll = { owed, net };
   } else if (b.roll) throw mismatch();
   requireThat(quote.deadline > BigInt(c.now()), "PRICING_EXPIRED", "The quote expired before it was used; prepare again");
@@ -545,10 +545,10 @@ export async function lpQuote(c: Pick<Ctx, "d" | "chain" | "rates" | "now">, i: 
 }
 
 /** An LP loan as the reads answer it, what can be done with it now (here, or on the app), and its position now. */
-function loanRow(c: Pick<Ctx, "d" | "now">, lane: LpLane, l: LpLoan, served: readonly ActionName[], position: ReturnType<typeof figures> | null, vaults: readonly LaneVault[]) {
+function loanRow(c: Pick<Ctx, "d"> & { chainNow: number }, lane: LpLane, l: LpLoan, served: readonly ActionName[], position: ReturnType<typeof figures> | null, vaults: readonly LaneVault[]) {
   const host = new URL(defaultsFor(c.d.chainId).appUrl).host;
   const way = (action: ActionName, who: string) => (served.includes(action) ? `${action} (${who})` : `${action} on ${host} (${who})`);
-  const running = l.state === 1 && c.now() < l.end;
+  const running = l.state === 1 && c.chainNow < l.end;
   return {
     loanId: rawStr(l.id), state: lpStateName(l.state), borrower: l.borrower, vault: l.vault, vaultName: vaults.find((v) => same(v.address, l.vault))?.name ?? null,
     ...positionRef(lane, l.adapter, l.pool, l.tokenId), principal: rawStr(l.principal), repay: rawStr(l.repayment), costBps: lpCostBps(l.principal, l.repayment),
@@ -584,9 +584,9 @@ export async function lpLoans(c: Pick<Ctx, "d" | "chain" | "now">, wallet: Addre
   const lane = laneOf(c);
   const [{ loans, complete }, credits, vaults] = await Promise.all([scanLoans(c, lane), walletCredits(c, lane, wallet), laneVaults(c, lane)]);
   const own = loans.filter((l) => same(l.borrower, wallet));
-  const now = await positionsNow(c, lane, own);
+  const [now, head] = await Promise.all([positionsNow(c, lane, own), c.chain.head()]);
   return {
-    wallet, loans: own.map((l) => loanRow(c, lane, l, served, now.get(rawStr(l.id)) ?? null, vaults)),
+    wallet, loans: own.map((l) => loanRow({ d: c.d, chainNow: head.timestamp }, lane, l, served, now.get(rawStr(l.id)) ?? null, vaults)),
     credits: credits.map((x) => ({ ...x, amount: rawStr(x.amount) })),
     note: [
       "LP loans this wallet borrowed, newest first, in raw USDG (6 decimals); a running loan's position is valued at its pool's price now. credits are what the lane's core holds for the wallet: lp_withdraw takes them.",
@@ -604,17 +604,24 @@ export async function lpHoldings(c: Pick<Ctx, "d" | "chain" | "now">, wallet: Ad
   const lane = laneOf(c);
   const [{ loans, complete }, credits, lane_] = await Promise.all([scanLoans(c, lane), walletCredits(c, lane, wallet), laneVaults(c, lane)]);
   const own = loans.filter((l) => same(l.borrower, wallet));
-  const now = await positionsNow(c, lane, own);
+  const [now, head] = await Promise.all([positionsNow(c, lane, own), c.chain.head()]);
   const vaults = (await Promise.all(lane_.map(async (v) => {
     // A bonus arrives from a defaulted loan's sales; an abandoned loan's, once its position is recovered (gage's index asks both).
     const defaulted = loans.filter((l) => (l.state === 3 || l.state === 4) && same(l.vault, v.address));
     const [shares, bonuses] = await Promise.all([c.chain.lpShares(v.address, wallet), c.chain.lpBonuses(v.address, defaulted.map((l) => l.id), wallet)]);
-    const value = shares > 0n ? await c.chain.lpPreviewRedeem(v.address, shares) : 0n;
+    // D454: a reserve vault's sGAGE, which stays the wallet's once its shares are gone, and its worth, null while its
+    // reserve's conversion fails (its previews then revert, where an LPVault's never do).
+    const companion = await c.chain.lpCompanion(v.address);
+    const sgage = companion ? await c.chain.lpRewardClaimable(companion, wallet).catch(() => null) : null;
+    const value = shares > 0n ? await c.chain.lpPreviewRedeem(v.address, shares).catch((e: unknown) => { if (companion) return null; throw e; }) : 0n;
     const claimable = defaulted.flatMap((l, n) => (bonuses[n]! > 0n ? [{ loanId: rawStr(l.id), claimable: rawStr(bonuses[n]!) }] : []));
-    return shares > 0n || claimable.length ? [{ vault: v.address, name: v.name, shares: rawStr(shares), shareDecimals: (await lpShareUnit(c.chain, v.address)).decimals, valueUSDG: rawStr(value), bonuses: claimable }] : [];
+    return shares > 0n || claimable.length || (sgage ?? 0n) > 0n ? [{
+      vault: v.address, name: v.name, shares: rawStr(shares), shareDecimals: (await lpShareUnit(c.chain, v.address)).decimals, valueUSDG: orNull(value), bonuses: claimable,
+      ...(companion ? { sgageClaimable: orNull(sgage) } : {}),
+    }] : [];
   }))).flat();
   return {
-    loans: own.map((l) => loanRow(c, lane, l, served, now.get(rawStr(l.id)) ?? null, lane_)),
+    loans: own.map((l) => loanRow({ d: c.d, chainNow: head.timestamp }, lane, l, served, now.get(rawStr(l.id)) ?? null, lane_)),
     credits: credits.map((x) => ({ ...x, amount: rawStr(x.amount) })),
     vaults, complete,
   };
@@ -635,33 +642,48 @@ export function mandateWords(lane: LpLane, mandate: readonly LpMandatePool[] | n
   ].join(" ");
 }
 
+/** A reserve vault's companion as `lpVaults` answers it (docs/api.md "LP lane", Reserve vaults): raw amounts, null where a read failed. */
+const reserveRow = (r: LpReserveState) => ({
+  companion: r.companion, token: r.token, shares: orNull(r.shares), value: orNull(r.value), payable: orNull(r.payable), freeLiquidity: orNull(r.freeLiquidity),
+  bufferBps: r.bufferBps, minCostBpsPerYear: r.minCostBpsPerYear, closed: r.closed, rewardsAccounted: orNull(r.rewardsAccounted),
+});
+/** What `lpVaults` says of every vault. */
+const LP_VAULTS_NOTE = "Raw USDG (6 decimals). Each vault is an ERC-4626 whose shares are an ERC-20 (gLP) that moves between wallets, counted in the vault's own shareDecimals (18, or 12 for a vault opened before 24 October 2026): usdgPerShare is what one whole share (10^shareDecimals raw, one USDG's worth when the vault opened) redeems for now, and a bonus belongs to whichever wallet held the shares while its loan ran. A vault funds loans only in the pools of its mandate (funds says which, and from when: a pool its curator adds funds three hours later); factory vaults were opened by a curator the registry allows (curator). A vault is impaired while a loan past its end is not settled or tokens a defaulted position delivered wait to be sold: it then takes no deposit and pays nothing out. Its deposits close while value it wrote off may still come back. Only the vaults the registry still allows are listed, however many curators opened: one it removed takes no new loans, its open ones running to their ends, and a wallet holding its shares finds it in its portfolio and redeems with lp_redeem. lp_deposit and lp_redeem act on one; its curator changes its pools with lp_vault_add_pool and lp_vault_remove_pool.";
+/** What `lpVaults` says of its reserve vaults, where it lists one. */
+const RESERVE_NOTE = "A reserve vault (one with a reserve here) keeps its cash past its curator's buffer in an outside ERC-4626 (reserve.token), counted in its assets, and draws on it for loans and withdrawals: freeCashUSDG is its cash alone, reserve.value what its reserve shares are worth, reserve.payable what the reserve can pay of them now, and reserve.freeLiquidity what the vault can pay out now, cash and reserve. Those are null, as totalAssetsUSDG and usdgPerShare may be, while the reserve cannot be read; it then takes no deposit and pays nothing out. reserve.minCostBpsPerYear is the least a loan must cost it, a year at its rate. Its holders also share sGAGE from its loans, outside the share price: gage_portfolio's lp.vaults says what a wallet may claim (sgageClaimable, raw, 18 decimals), and lp_claim_rewards claims it. What the reserve returns moves, and carries that reserve's own risk.";
+
 /**
  * The LP vaults that may lend, the manifest's and those curators opened through the lane's factory (D318), every one the
  * registry allows (D319: one it removed is not listed; a wallet holding its shares finds it in its portfolio): their
  * size, free cash, loans out, share value, fee and switches now, raw USDG; each one's curator and its mandate (the pools
- * it funds, each from when, said in `funds`).
+ * it funds, each from when, said in `funds`); a reserve vault's liquidity, reserve and least cost (D454, `reserve`, left
+ * out for an LPVault, whose row stays as it was). A reserve vault whose reserve cannot be read stays listed, its figures
+ * null; no other vault's read waits on it.
  */
 export async function lpVaults(c: Pick<Ctx, "d" | "chain" | "now">) {
   const lane = laneOf(c), vaults = await lendingVaults(c, lane), now = c.now();
   const rows = await Promise.all(vaults.map(async (v) => {
     const [st, share] = await Promise.all([c.chain.lpVault(v.address), lpShareUnit(c.chain, v.address)]);
-    const perShare = await c.chain.lpPreviewRedeem(v.address, share.one);
+    // A reserve vault's previews and totalAssets revert while its reserve's conversion fails; an LPVault's never do.
+    const perShare = await c.chain.lpPreviewRedeem(v.address, share.one).catch((e: unknown) => { if (st.reserve) return null; throw e; });
+    const priced = st.totalAssets !== null;
     // Every vault listed is one the registry allows (`allowed`, kept for the answer's shape).
     return {
       vault: v.address, name: v.name, factory: v.factory, curator: st.curator, allowed: true,
-      takesDeposits: !st.impaired && !st.depositsClosed, paysOut: !st.impaired, lends: !st.impaired && !st.fundingPaused,
+      takesDeposits: !st.impaired && !st.depositsClosed && priced, paysOut: !st.impaired && priced, lends: !st.impaired && !st.fundingPaused,
       mandate: st.mandate?.map((p) => ({
         adapter: p.adapter, pool: p.pool, poolName: lpPoolOf(lane, p.adapter, p.pool)?.name ?? null, activeAt: p.activeAt, funding: p.activeAt !== 0 && p.activeAt <= now,
       })) ?? null,
       funds: mandateWords(lane, st.mandate, now),
-      totalAssetsUSDG: rawStr(st.totalAssets), freeCashUSDG: rawStr(st.freeCash), outstandingPrincipalUSDG: rawStr(st.outstandingPrincipal), totalShares: rawStr(st.totalShares),
-      shareDecimals: share.decimals, usdgPerShare: rawStr(perShare),
+      totalAssetsUSDG: orNull(st.totalAssets), freeCashUSDG: rawStr(st.freeCash), outstandingPrincipalUSDG: rawStr(st.outstandingPrincipal), totalShares: rawStr(st.totalShares),
+      shareDecimals: share.decimals, usdgPerShare: orNull(perShare),
       performanceFeeBps: st.performanceFeeBps, maxLoanPrincipalUSDG: rawStr(st.maxLoanPrincipal), openLoans: st.openLoans, bonusHeldUSDG: rawStr(st.bonusHeld),
       impaired: st.impaired, depositsClosed: st.depositsClosed, fundingPaused: st.fundingPaused,
+      ...(st.reserve ? { reserve: reserveRow(st.reserve) } : {}),
     };
   }));
   return {
     vaults: rows,
-    note: "Raw USDG (6 decimals). Each vault is an ERC-4626 whose shares are an ERC-20 (gLP) that moves between wallets, counted in the vault's own shareDecimals (18, or 12 for a vault opened before 24 October 2026): usdgPerShare is what one whole share (10^shareDecimals raw, one USDG's worth when the vault opened) redeems for now, and a bonus belongs to whichever wallet held the shares while its loan ran. A vault funds loans only in the pools of its mandate (funds says which, and from when: a pool its curator adds funds three hours later); factory vaults were opened by a curator the registry allows (curator). A vault is impaired while a loan past its end is not settled or tokens a defaulted position delivered wait to be sold: it then takes no deposit and pays nothing out. Its deposits close while value it wrote off may still come back. Only the vaults the registry still allows are listed, however many curators opened: one it removed takes no new loans, its open ones running to their ends, and a wallet holding its shares finds it in its portfolio and redeems with lp_redeem. lp_deposit and lp_redeem act on one; its curator changes its pools with lp_vault_add_pool and lp_vault_remove_pool.",
+    note: `${LP_VAULTS_NOTE}${rows.some((r) => "reserve" in r) ? ` ${RESERVE_NOTE}` : ""}`,
   };
 }

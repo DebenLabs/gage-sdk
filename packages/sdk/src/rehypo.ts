@@ -10,7 +10,7 @@
 import { encodeFunctionData, type Address } from "viem";
 import type { RehypoSourceRead } from "./chain.js";
 import { rehypoSourceAbi } from "./abi.js";
-import { indexerOf, vaultName } from "./data.js";
+import { vaultName } from "./data.js";
 import { exitGiveUp, exitReads, giveUpText, soldFor, takesOver } from "./earnExit.js";
 import { ApiError, requireThat } from "./errors.js";
 import { chooseExitHolding, EXIT_CONFIRM_SECONDS, EXIT_FALL_SECONDS, exitNeed, liveExit } from "./exitChoice.js";
@@ -56,7 +56,7 @@ export async function rehypoExitNow(c: Ctx, i: Extract<ActionInput, { action: "r
   });
   const title = `Exit ${f.money(claim, cash)} now from ${name} (${f.short(vault)})`;
   // A loan of the vault past its end and not booked stops the source's exits until a settle books it (`VaultSettling`).
-  if (now >= s.earliestMaturity) return settleFirst(c, vault, view(null), title, name, indexerOf(c, g));
+  if (now >= s.earliestMaturity) return settleFirst(c, vault, view(null), title, name, g);
   requireThat(claim > s.payableNow, "NOTHING_TO_EXIT", "The source can pay your share now: remove your liquidity on the pool's hook as usual");
   // The source's vault shares: what its commitment is capped at, and the LP's part of them is what its exit gives up.
   const held = await c.chain.vaultShares(vault, source);

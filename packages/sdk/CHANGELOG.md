@@ -1,5 +1,142 @@
 # Changelog
 
+## 0.9.0
+
+- **A vault that buys running loans alone is no lender (D452, D459).** `assets()` counts, and takes terms from, only the
+  partner vaults that fund new loans against a token, so a buy-only vault no longer adds to `vaults`. `earnVaults()` marks
+  such a vault `buysOnly: true` with `lends: false`, and `gage_earn_vaults` says it lists the current generations' vaults
+  that take deposits, not every vault gage holds.
+- **Mainnet's LP lane takes Ouro v3 positions.** The bundled mainnet release names Ouro v3's adapter and its WETH/USDG 0.3%
+  and 1% pools, at the ends of `lpLane.adapters` and `lpLane.pools`. A wallet's positions in them are listed like any
+  other, and no loan is offered against one until a vault names its pool (`VAULT_CANNOT_FUND`).
+- **Reserve LP vaults, once a release names them.** A vault is one when its `COMPANION()` answers an address; that read and
+  its companion's are apart from the vault's other reads, so an LP vault without the name reads exactly as before. `lpVaults()`
+  adds a reserve vault's `reserve` (its liquidity, what it holds, the least a loan must cost it), and may answer null for
+  `totalAssetsUSDG` and `usdgPerShare` while the reserve cannot be read, when it takes no deposit and pays nothing out.
+  `portfolio().lp.vaults` adds its `sgageClaimable`, and its `valueUSDG` may be null then; one such vault fails neither read.
+  `lp_redeem` is refused above its `maxRedeem`, not its free cash, and `lp_deposit` no longer says its cash would sit idle.
+- **`lp_claim_rewards`, new,** claims a holder's sGAGE from a reserve vault, served where the lane names its rewards bridge,
+  so on the testnet and on mainnet since 7 November 2026: `NOT_RESERVE_VAULT` on another LP vault, `NOTHING_TO_CLAIM`
+  with none to claim.
+- **The manifest's `lpLane` may name `rewardsBridge` and `retiredVaultFactories`,** as every other reader of it now takes.
+  Both bundled releases name both since their lanes moved to reserve vaults on 7 November 2026 (`sync-deployment` keeps
+  them): mainnet's new factory `0xe407…40Ab` and bridge `0xF25B…93B7`, its first factory retired and RWA LP named.
+- **`capabilities()` names the rollover and cash-out routers** beside the core, and each lend asset's, so a site reads them
+  rather than hard-codes them.
+- **`assets()` adds `terms` and `paused`.** `terms`: those of the allowed terms a partner vault lending against the token
+  takes now, where `capabilities().terms` is what gage allows. `paused`: the token cannot move now.
+- **A paused token holds up no repayment.** `reclaim` and `cancel` leave the pickup out while the pledge's token is paused:
+  the repayment or the cancellation is then the plan's final step, its `view` says `collateralPaused`, and the collateral
+  waits in the loan's account. Asked for once it stands alone, the pickup answers `TOKEN_PAUSED`, as do `roll` and
+  `cash_out`, which move the pledge; `collect` leaves such a pickup out and says so. A read that fails holds up nothing.
+- **`loan()` adds `collateralPaused`,** `portfolio()`'s loans add `token` and `term`, and a roll's `view` adds `allowance`
+  and `otherAutoRolls`.
+- **A roll waits a moment for its plan's date.** The rates service dates a plan by the block it read, and a node a moment
+  behind that one refused the simulation of a good plan (`SIMULATION_FAILED`).
+- **A 1-day loan rolls on gage.cash, on mainnet** (`ROLLOVER_CLOSED`): its one approval is its automatic settlement, which a
+  roll's would take the place of.
+
+- **A repayment follows its core's own window.** `reclaim` plans a repayment until the core stops taking it, the term's end
+  plus `GRACE()`, where it answered `TERM_ENDED` and said the lenders keep the collateral from the term's end. Only the two
+  earliest cores give any, 48 hours. On those, the plan's `view.endsAt` and its "Repay before" row are that later end, and a
+  plan past the term says so in its notes. `loan()` and a cash-out's refusal still count from the term's end. `Chain` adds
+  `coreGrace`, for code that implements its own: without it, `reclaim` of a funded loan answers `INVALID_CALL`.
+- **A withdrawal sized to a vault's free cash leaves a basis point of it**, a partner vault's (`earn_redeem`) and an LP
+  vault's (`lp_redeem` without `shares`) alike, as a share's value grows faster than free cash while the transaction is
+  on its way.
+- **An `UNAVAILABLE` cause names the read that failed:** `contractAddress` and `functionName`, and what the node answered,
+  `status` (HTTP) or `code` (JSON-RPC). `withoutUrls` keeps the same of any failure, any URL taken out, for your own logs.
+
+## 0.8.0
+
+### Breaking
+
+What code written for 0.7 may meet:
+
+- **`status: "partial"`, new, with `error: null`.** `run`, `prepare` and `portfolio()` answer it where part of what they read
+  did not answer, where they answered `done` or `nothing_to_do`. Read `error` only on `stopped`. `collect` and `portfolio`
+  read a core's credit apart from its loans, so a credit the chain knows stays in the plan.
+- **A chainless `viemSigner` signs for mainnet,** where it took the testnet. On the testnet, pass the chain, or every run
+  stops with `CHAIN_MISMATCH`.
+- **Refusal codes.** A token no vault lends against is `NO_VAULT_LENDS`, where it was `UNSUPPORTED_COLLATERAL`. A term gage
+  does not offer is `TERM_NOT_ALLOWED` before anything is quoted, on the largest loan and on leverage, where the largest loan
+  answered `TERM_NOT_FUNDED`. More of the rates service's refusals come by their own codes (`EMPTY_PLAN`, `TERM_TOO_LONG`,
+  `VAULT_PAUSED`, `CHAIN_UNAVAILABLE` and more), where they were `RATES_REFUSED`. `PRICE_MOVED`, `PRICING_EXPIRED`,
+  `PRICING_UNAVAILABLE` and `NO_SALE` are retryable.
+- **Failures are `ApiError`s.** Every method answers what is no refusal of its own as `UNAVAILABLE`, retryable, what failed as
+  its `cause` with any URL taken out, or `INVALID_CALL` for a `TypeError`, where an RPC's failure reached callers raw. A
+  `catch` on viem's errors no longer sees one.
+- **In a process's first seconds,** until gage's index has named its generations, a lend asset or engine not named yet answers
+  `UNAVAILABLE`, where it was `UNKNOWN_LEND_ASSET` or `UNKNOWN_ENGINE`, and `assets()`, `portfolio()` and `collect` answer
+  `partial`, naming what is unread.
+- **`Chain` adds** `routerAdmissions`, `vaultManager`, `policyTokens`, `vaultMaxRedeem`, `tradeFeeBps`, `uiMultipliers` and
+  `cashoutFlashPool`, for code that implements its own: without them a call answers `INVALID_CALL`.
+
+### The rest
+
+- **With gage's index silent, a wallet repays and leaves a vault from the chain.** `reclaim` serves the wallet's own loan
+  once the chain proves it public: every router its core's registry ever admitted is one the release names, and no
+  private-lane router opened it. A private loan, one the chain cannot say of and a registry with a router the release does
+  not name stay refused. `earn_redeem`, the exits and `rehypo_exit_now` read the vault itself, and a settlement due books
+  what the factory's exit desk names. An index that answers still decides. A deposit, `park`, `unpark`, `cancel`, the other
+  moves on a loan and every read still need it.
+- **`vaultOnChain`** reads one vault from the chain alone, and what it can pay a holder now with the call that withdraws
+  that, carrying the gas `earn_redeem` would.
+- **Once a transaction has gone out, `run` always answers.** A throwing or rejecting `onStep`, a limit's `release` that fails
+  and a chain that throws while waiting or reading the receipt no longer stand in for the answer: `sent` and `loan` stay in
+  it, and `notes` say what failed.
+- **A vault of one's own.** `createVault` answers the call that creates one partner vault with a free name, simulated from
+  the curator, and the same as a Safe's Transaction Builder file. The action `create_vault` is the same vault for `prepare`
+  and `run`, which answers its address (`RunResult.vault`). `examples/create-vault.ts` runs it.
+- **A vault's manager's calls.** `vault_manage` names what should change, each field one transaction, read from the chain
+  alone: name, pause, automatic funding, priority fee ceiling, fee recipient, risk limits, buying and selling running
+  loans, tokens. What the vault has already is left out with a note. A loan listed for sale says how far its price falls and
+  what depositors bear (`view.listing`), and a new fee recipient is named whole and says it takes fees not yet claimed.
+  `vaultManagerAbi`, `assetPolicyAbi` and more of `lenderMarketAbi` and `factoryAbi` are exported.
+- **`earnVaults()` names each vault's `manager`**, the address that runs it, and so does each vault `parkPositions` lists.
+- **A vault's name that claims a standing is not repeated.** One whose words claim gage, official, verified or audited, or
+  that starts with Team or OG, reads as the vault's short address in every answer: anyone can name a vault anything, and
+  this package holds no badges. A plain copy of another vault's name stays as written. `manager` says who runs each.
+- **A list says when it stops, and a vault is found by its address.** `earnVaults()` and `portfolio()` read at most 1,000
+  vaults a factory, in address order: past that they answer `partial`, naming the factory in `unread`. Acting on a vault
+  reads that vault alone, so it needs no place in any list.
+- **The examples deposit and park into the vault you name.** `examples/deposit.ts`, `lp.ts` and `park.ts`, and the guides
+  that quote them, take the vault's address: anyone can create a vault, so no example picks one from a list by its place.
+- **`capabilities()` says only the rules of the actions a Gage serves.**
+- **A vault's name that hides text is no name.** One with a control or invisible format character, or one that draws
+  nothing (a filler, a blank braille cell, a variation selector other than an emoji's), is named as a vault without one, as
+  gage.cash names it, where it was cleaned, which could make it a perfect copy of another vault's.
+- **A park's or an unpark's calls say what to add to their estimates.** `parkCalls`, `unparkCalls` and `prepare`'s `calls`
+  carry `extraGas` on each call (a bigint, and a string in `prepare`'s), for a client that sends them one by one: its gas
+  limit is its own estimate plus `extraGas`, or the call can run out of gas and revert, the funds staying with the wallet.
+- **`assets()` adds `vaults`**, how many partner vaults lend against each token now (`null` while the index cannot say), and
+  `uiMultiplier`.
+- **Quotes with no wallet.** `leverageQuote` and `putQuote` read as the core's own preview until a wallet is named, where
+  they always answered `SELF_DEALING`.
+- **More in a refusal.** `RATE_LIMITED` adds `details.retryAfterSeconds`. A borrow larger than its pledge supports answers
+  `PRINCIPAL_TOO_HIGH` with the most it does. In a browser, a fetch that fails adds "or this page's origin is not allowed" to
+  its words. A signer's own refusal reaches `run` as itself, not as `SEND_FAILED`.
+- **A manifest as gage.cash serves it.** `createGage({ manifest })` takes `/api/deployment` whole or as its `deployment`: with
+  no hosts named, earlier generations are read where the bundled release says, and one no bundled release names reads as
+  unread, never as empty. gage-contracts' addresses-only export is refused as that (`MANIFEST_ADDRESSES_ONLY`), and any other
+  it cannot read as `INVALID_MANIFEST`.
+- **A found generation stays once proved,** whatever the index says next: readable once unlisted, as a retained one, and in
+  the deployment before anyone is told it may be relied on, so a real engine is never refused. A call waits at most three
+  seconds for what is found.
+- **A mis-cased address** is read as the address it is, where viem threw on a wrong checksum. A `feeRecipient`, which nothing
+  on chain checks, must be all one case or pass its checksum.
+- **A cash-out goes through while its fresh quote stays above the plan's floor**, its transaction held to that floor, where
+  a lower quote at all stopped it. An aggregator that does not answer is `SALE_UNAVAILABLE`, retryable. A router with no
+  flash pool (a v4 router) is left to gage.cash.
+- **Loan actions judge a term's end by the chain's clock**, as exits do, where a machine ahead of the chain was refused a
+  valid repayment, and `collect` a listing's deadline the same way. Under a minute left with an approval to send first, the
+  plan says so and still offers it.
+- **A roll's first read asks again on an expired price**, as its signed plans do. **A rolled LP loan** says so, and LP rows and
+  rolls judge a term's end by the chain's clock.
+- **Reads asked together go as one Multicall3 call**, so `assets()` and `balances()` make one or two requests, not one a token.
+- **`gage-sdk/testing`** answers a borrow quote out of the box (`instantLoan`). **The examples' command runs**: `tsx` is a
+  devDependency. `examples/quote.ts` defaults to a token a vault lends against. The README's sample runs as pasted.
+
 ## 0.7.0
 
 The first release on npm after 0.6.0: it also carries 0.6.1 and 0.6.2 below, prepared but never published. Breaking

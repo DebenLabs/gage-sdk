@@ -51,7 +51,8 @@ export function trim(live, { intentGenerations, lpLane }) {
     ...(g.exitDesk ? { exitDesk: g.exitDesk } : {}),
     // Its own index (D403); absent, a current entry is read at `intentV1IndexerUrl`.
     ...(g.indexerUrl ? { indexerUrl: g.indexerUrl } : {}),
-    engine: pick(g.engine, ["registry", "rewards", "cashoutRouter"]),
+    // `bridged` and `rewardTerms` say whether its own registry quotes its sGAGE (src/deployment.ts `registryRewards`).
+    engine: pick(g.engine, ["registry", "rewards", "cashoutRouter", "bridged", "rewardTerms"]),
     collateral: g.collateral.map((c) => pick(c, ["symbol", "token", "category"])),
     cashoutPools: g.cashoutPools.map(pool),
   });
@@ -60,7 +61,7 @@ export function trim(live, { intentGenerations, lpLane }) {
   };
   // The generations the release keeps for their positions, each with its retained index (src/deployment.ts `retired`).
   const retained = {
-    ...(live.intentV1Previous?.length ? { intentV1Previous: live.intentV1Previous.map((p) => ({ intentV1: pick(p.intentV1, ["core", "factory", "exitDesk"]), intentV1IndexerUrl: p.intentV1IndexerUrl })) } : {}),
+    ...(live.intentV1Previous?.length ? { intentV1Previous: live.intentV1Previous.map((p) => ({ intentV1: pick(p.intentV1, ["core", "factory", "exitDesk", "loopRouter", "rolloverRouter"]), intentV1IndexerUrl: p.intentV1IndexerUrl })) } : {}),
     ...(live.intentV1AssetsPrevious === undefined ? {} : {
       intentV1AssetsPrevious: Object.fromEntries(Object.entries(live.intentV1AssetsPrevious).map(([symbol, rows]) => [symbol, rows.map((r) => ({ entry: assetEntry(r.entry), indexerUrl: r.indexerUrl }))])),
     }),
@@ -74,7 +75,8 @@ export function trim(live, { intentGenerations, lpLane }) {
   const lp = lpLane(live, { includeHidden: true });
   const lpBlock = lp ? {
     lpLane: {
-      ...pick(live.lpLane, ["public", "startBlock", "core", "registry", "vaultFactory"]),
+      // A lane moved to reserve vaults (D454) also names its older factories and its rewards bridge.
+      ...pick(live.lpLane, ["public", "startBlock", "core", "registry", "vaultFactory", "retiredVaultFactories", "rewardsBridge"]),
       vaults: (live.lpLane.vaults ?? []).map((v) => pick(v, ["address", "name"])),
       adapters: live.lpLane.adapters.map((a) => pick(a, ["kind", "address", "positionManager", "factory", "poolManager", "hook"])),
       executors: live.lpLane.executors.map((e) => pick(e, ["address", "token", "kind", "pools", "poolId"])),

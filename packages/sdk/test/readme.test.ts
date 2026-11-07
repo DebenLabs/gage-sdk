@@ -18,6 +18,14 @@ function codes(): string[] {
   return [...found].sort();
 }
 
+describe("the examples' run command", () => {
+  it("has what it runs among this package's own dependencies: npx finds nothing a package only depends on through another", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { devDependencies: Record<string, string> };
+    expect(readme + readFileSync(new URL("../examples/quote.ts", import.meta.url), "utf8")).toContain("npx tsx");
+    expect(pkg.devDependencies.tsx).toBeDefined();
+  });
+});
+
 describe("the README", () => {
   it("names every refusal the SDK can give", () => {
     const all = codes();

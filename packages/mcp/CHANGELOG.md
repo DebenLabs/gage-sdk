@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.0
+
+Built on exactly gage-sdk 0.9.0; what it changes for every tool is in its changelog.
+
+- **Mainnet's LP lane takes Ouro v3 positions,** as gage-sdk's bundled release says, and the instructions and tools name it.
+- **Reserve LP vaults, once a release names them,** as gage-sdk reads them: `gage_lp_vaults` adds a reserve vault's `reserve`,
+  `gage_portfolio`'s `lp.vaults` its `sgageClaimable`, and `gage_lp_redeem` pays above its free cash, up to `maxRedeem`. An LP
+  vault with no reserve reads and acts as before.
+- **`gage_lp_claim_rewards` and `gage_prepare_lp_claim_rewards`, new,** claim a holder's sGAGE from a reserve vault. They are
+  served where the lane names its rewards bridge: on the testnet and on mainnet since 7 November 2026, so mainnet serves the claim's
+  prepare without a key (59 tools) and both with one (102). A claim
+  moves no USDG and counts against no limit; the limits' amounts and defaults are unchanged.
+
+## 0.8.0
+
+Built on exactly gage-sdk 0.8.0; what it changes for every tool is in its changelog, whose Breaking list a client reading
+tool answers may meet too: a `partial` status, and some refusals' codes. The spend limits' amounts and defaults are unchanged.
+
+- **A put's margin in USDG counts against the deposit limits,** as all it can lose, where a put counted nothing. The stock
+  token it borrows still does not count.
+- **The commands name their release.** What `gage-mcp init` tells an agent to add, this README and the guide run
+  `gage-mcp@0.8.0`, as the server they add holds the wallet's key: a new publish reaches a wallet when its owner moves to it, not on
+  its next start. To move, run the new release's `init` again and add what it prints. A token gage admits after a release
+  is refused until then.
+- **A vault's fee recipient stays this wallet under the limits.** While any limit is on, `gage_vault_manage` refuses a
+  `feeRecipient` other than the wallet (`FEE_RECIPIENT_LIMIT`), as it takes fees not yet claimed too, unless the owner names
+  the address in `GAGE_ALLOW_FEE_RECIPIENT`.
+- **A partner vault of one's own.** `gage_create_vault` and `gage_prepare_create_vault` create one with a free name;
+  `gage_vault_manage` and `gage_prepare_vault_manage` carry its manager's calls; `gage_create_partner_vault` answers the call
+  and a Safe's Transaction Builder file; `gage_vault_on_chain` reads a vault, and what it can pay a holder now, from the
+  chain alone. 58 tools without a key on mainnet, 100 with one. None of them counts against the spend limits: they take no
+  money from the wallet.
+- **Refusals and failures read as gage-sdk's**, retryable where asking again can help: `gage_assets` adds `vaults` and
+  `uiMultiplier`, a token no vault lends against answers `NO_VAULT_LENDS`, a mis-cased address is read as the address it
+  is, and `gage_collect` and `gage_portfolio` answer `partial` where part of them did not answer.
+- **`@modelcontextprotocol/server` 2.4.0**, that package's current release. The server runs over stdio, as before.
+
 ## 0.7.0
 
 Built on exactly gage-sdk 0.7.0, the first release on npm after 0.6.0: it also carries 0.6.1 and 0.6.2 below, prepared
@@ -14,7 +51,7 @@ but never published. The spend limits' settings and defaults are unchanged; what
   gets the calls too. The tool's description and the server's instructions say so; its spend limits are unchanged.
 - **Mainnet's LP lane is public (5 November 2026)**, as gage-sdk's bundled release says: on mainnet the server adds the
   lane's four reads and a prepare for each of its fourteen actions, Fables' wrap and unwrap and a curator's
-  `lp_create_vault` among them, and with a wallet each action's signed twin (48 tools without a key, 83 with one), and
+  `lp_create_vault` among them, and with a wallet each action's signed twin (54 tools without a key, 94 with one), and
   its instructions say what they are for. The spend limits count an LP loan by its principal and an LP vault deposit by
   its amount, as on the testnet.
 - **One read that fails leaves the rest of a portfolio and of Collect standing (D412)**, as gage-sdk does:

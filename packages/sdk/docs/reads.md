@@ -21,17 +21,25 @@ vaults: lending.map((v) => v.name),
 ```
 
 - **`capabilities()`**: the network and chain, gage's contracts (USDG, the core new loans are listed on, the partner
-  vault factory, the loop router), the terms offered, the origination fee, whether new loans are paused
+  vault factory, the loop, rollover and cash-out routers), the terms offered, the origination fee, whether new loans are paused
   (`newLoansPaused`), the actions served, the rules in words, and gage.cash's address (`app`). Where gage lends more
   than USDG, `lendAssets`: each asset's token, symbol, decimals, whether it is a stablecoin (`stable`), its core,
-  factory and terms, and its loop and put routers where it names them. Where the LP lane is public, `lpLane`; where
+  factory and terms, and its loop, put, rollover and cash-out routers where it names them. Where the LP lane is public, `lpLane`; where
   park is served, `parkPools`.
-- **`assets()`**: the tokens taken as collateral now, each with its minimum (`minAmount`, raw), its most per loan where
-  a registry sets one (`maxPerLoan`, else `null`), whether leverage buys it, its Borrow page on gage.cash (`link`), and,
-  once gage lends more than USDG, the asset it is borrowed in (`asset`). A token two generations take has a row for each.
-- **`earnVaults()`**: the partner vaults: name, the tokens they lend against (`tokens`), performance fee, longest loan
+- **`assets()`**: the tokens gage admits as collateral now, as this release names them, each with its
+  minimum (`minAmount`, raw), its most per loan where a registry sets one (`maxPerLoan`, else `null`), whether leverage
+  buys it, how many partner vaults lend against it now (`vaults`: `0` means none does, and a quote refuses
+  `NO_VAULT_LENDS`; `null` while gage's index cannot say) and for which of the terms offered (`terms`, `null` likewise),
+  whether it is paused now (`paused`: it cannot move, so a repayment or a cancellation goes through and the rest waits), its
+  Borrow page on gage.cash (`link`), and, once gage lends more
+  than USDG, the asset it is borrowed in (`asset`). A token two generations take has a row for each. A stock's `uiMultiplier`
+  (18 decimals, `null` for none) is what gage.cash and wallets show its amounts times: every amount in the SDK is raw, as
+  the chain counts it, so a wallet's figure divided by it is what to pledge. Until gage's index has named the lend markets
+  found since the release, the list may be short of their tokens: `status: "partial"` and `unread` say so.
+- **`earnVaults()`**: the partner vaults: name, `manager` (the address that runs it), the tokens they lend against (`tokens`), performance fee, longest loan
   (`longestLoanDays`), size, free cash, share value, whether they fund loans now (`lends`) and their page on gage.cash
-  (`link`). A USDG vault names its figures in USDG (`totalAssetsUSDG`, `freeCashUSDG`, `usdgPerShare`); another asset's
+  (`link`). It reads at most 1,000 vaults a factory, in address order, and answers `status: "partial"`, naming the factory in
+  `unread`, past that; acting on a vault reads that vault alone. A USDG vault names its figures in USDG (`totalAssetsUSDG`, `freeCashUSDG`, `usdgPerShare`); another asset's
   vault names them in that asset (`totalAssets`, `freeCash`, `assetsPerShare`), and, once gage lends more than USDG,
   every row names its `asset`.
 - **`vaultFreeCash({ vault })`**: what one vault pays withdrawals from now (`freeCashUSDG`, or `freeCash` in a lend
@@ -90,6 +98,7 @@ amounts and deadlines, and:
 - `autoRoll`: its standing instruction to roll by itself, as the rollover router keeps it (`rollsLeft`, `until`,
   `maxCost`, …), or `null`; on a core with a put router, also `putAutoRoll`.
 - `closedBy`: what closed a repaid loan whose collateral does not come back, `roll` or `cash_out`, or `null`.
+- `collateralPaused`: whether its token is paused now and cannot move: `actions` then lists only what still goes through.
 - `note`: on a generation the release has retired, which nothing rolls any more, why: repay such a loan before it ends.
 
 `waitForFill({ loanId, engine? })` waits for a listing to be funded ([Borrowing](borrowing.md#wait-for-funding)).

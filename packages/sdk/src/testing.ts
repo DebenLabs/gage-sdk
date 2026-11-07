@@ -4,7 +4,7 @@
  */
 import { encodeAbiParameters, encodeFunctionData, keccak256, zeroAddress, type Address, type Hex } from "viem";
 import { testnetAggregatorAbi } from "./aggregatorCall.js";
-import type { Chain, Loan, LpFacts, LpLoan, LpVaultState, PoolState, Sent, TokenConfig, V3PoolState, VaultBook } from "./chain.js";
+import type { Chain, Loan, LpFacts, LpLoan, LpReserveState, LpVaultState, PoolState, Sent, TokenConfig, V3PoolState, VaultBook } from "./chain.js";
 import { parseDeployment, type Deployment } from "./deployment.js";
 import { poolId } from "./v4math.js";
 import { ApiError } from "./errors.js";
@@ -137,6 +137,11 @@ export const lpManifest = (over: { public?: boolean } = {}) => ({
     ],
   },
 });
+/** `lpManifest()` with the lane's rewards bridge named (D454), which serves the claim of a reserve vault's sGAGE. */
+export const lpRewardsManifest = () => {
+  const m = lpManifest();
+  return { ...m, lpLane: { ...m.lpLane, rewardsBridge: LP_BRIDGE } };
+};
 /**
  * Every position format the lane takes, as `lpFormatsManifest()` adds them to `lpManifest()`'s: SushiSwap v3 (the Uniswap
  * v3 adapter on Sushi's position manager and factory) with its WETH/USDG pool, and Uniswap v4 (its adapter naming the
@@ -237,8 +242,17 @@ export const lpLoan = (over: Partial<LpLoan> = {}): LpLoan => ({
 export const LP_VAULT_STATE: LpVaultState = {
   asset: USDG, core: LP_CORE, totalAssets: 200_000_000_000n, freeCash: 200_000_000_000n, totalShares: 200_000_000_000n * 10n ** 6n, outstandingPrincipal: 0n, bonusHeld: 0n,
   impaired: false, depositsClosed: false, fundingPaused: false, maxLoanPrincipal: 1_000_000_000_000n, performanceFeeBps: 1000, openLoans: 0,
-  curator: LP_CURATOR, mandate: [{ adapter: UNI_ADAPTER, pool: UNI_POOL, activeAt: 1 }, { adapter: RAMSES_ADAPTER, pool: RAMSES_POOL, activeAt: 1 }],
+  curator: LP_CURATOR, mandate: [{ adapter: UNI_ADAPTER, pool: UNI_POOL, activeAt: 1 }, { adapter: RAMSES_ADAPTER, pool: RAMSES_POOL, activeAt: 1 }], reserve: null,
 };
+/** A reserve vault's companion, its reserve's token and the lane's rewards bridge (D454). */
+export const LP_COMPANION = A(0x150), LP_RESERVE_TOKEN = A(0x151), LP_BRIDGE = A(0x152);
+/** A companion as `lpVault` reads it: 150,000 USDG in the reserve, all of it payable, past 10,000 USDG of free cash. */
+export const LP_RESERVE_STATE: LpReserveState = {
+  companion: LP_COMPANION, token: LP_RESERVE_TOKEN, shares: 148_000_000_000_000_000_000_000n, value: 150_000_000_000n, payable: 150_000_000_000n, freeLiquidity: 160_000_000_000n,
+  bufferBps: 500, minCostBpsPerYear: 400, closed: false, rewardsAccounted: 7n * 10n ** 18n,
+};
+/** The fixture's vault as a reserve vault (D454): the same size and shares, 10,000 USDG of it cash and the rest in its reserve. */
+export const LP_RESERVE_VAULT_STATE: LpVaultState = { ...LP_VAULT_STATE, freeCash: 10_000_000_000n, reserve: LP_RESERVE_STATE };
 /**
  * The rates service's LP quote (`GET /lp/quote/:core`, `gage-lp-quote-v1`) as a `fakeUpstream` route, echoing the
  * position, borrower, term and vault asked for (the lane's vault when none is): 1,000 USDG repaying 1,006 against
@@ -334,6 +348,7 @@ export function fakeChain(over: Partial<Record<keyof Chain, unknown>> = {}): Cha
     cashoutExecutorAllowed: () => Promise.resolve(true),
     // No route of gage's own goes through, so an aggregator's sale is weighed against none unless a test says so.
     cashoutRouteNet: () => Promise.resolve(null),
+    cashoutFlashPool: () => Promise.resolve(A(0xe9)),
     // Every vault is the USDG factory's, on the core, but GLDx's vault, which is GLDx's factory's, on GLDx's core.
     isVault: (factory: Address, vault: Address) => Promise.resolve(vault.toLowerCase() === GLD_VAULT ? factory.toLowerCase() === GLD_FACTORY : factory.toLowerCase() !== GLD_FACTORY),
     vaultCore: (vault: Address) => Promise.resolve(vault.toLowerCase() === GLD_VAULT ? GLD_CORE : CORE),
@@ -343,6 +358,15 @@ export function fakeChain(over: Partial<Record<keyof Chain, unknown>> = {}): Cha
       core: factory.toLowerCase() === GLD_FACTORY ? GLD_CORE : CORE, mandateVersion: 12, isCreator: true, openCreation: false,
       categories: tokens.map((t) => (t.toLowerCase() === NVDA ? 0 : t.toLowerCase() === SCHIFFY ? 1 : t.toLowerCase() === USDG ? 2 : null)),
     }),
+    // Every vault at mandate 12, managed by the wallet, as gage.cash's Create leaves one, nothing waiting.
+    vaultManager: () => Promise.resolve({
+      curator: WALLET, policy: A(0x7a), market: A(0x7b), mandateVersion: 12, name: "A partner vault", categoryMask: 9, paused: false, fillersOpen: true, feeRecipient: WALLET, executionCapBps: 2_000,
+      maxLoanPrincipal: 1_500_000_000n, maxAssetBps: 10_000, bufferBps: 0, minRateGrade: 3, categoryWeights: [10_000, 0, 0, 10_000],
+      pendingLimits: Array.from({ length: 8 }, () => ({ value: 0n, readyAt: 0 })), buysLoans: false, buyExtraBps: 0, buysOnly: false, pendingBuyExtraBps: 0, pendingBuyReadyAt: 0,
+    }),
+    policyTokens: (_policy: Address, tokens: readonly Address[]) => Promise.resolve(tokens.map(() => ({ picked: false, readyAt: 0 }))),
+    vaultMaxRedeem: () => Promise.resolve(null),
+    tradeFeeBps: () => Promise.resolve(0),
     vaultShares: () => Promise.resolve(10n ** 18n),
     // Every vault has a million units' worth of other holders' shares, worth what they started at, all of it free cash.
     vaultBook: (vault: Address): Promise<VaultBook> => Promise.resolve({
@@ -353,10 +377,17 @@ export function fakeChain(over: Partial<Record<keyof Chain, unknown>> = {}): Cha
     vaultRewards: () => Promise.resolve(0n),
     // What each core and vault pays in: GLDx's own, USDG everywhere else.
     coreAsset: (core: Address) => Promise.resolve(core.toLowerCase() === GLD_CORE ? GLDX : USDG),
+    // No core takes a repayment past the term, unless a test says so.
+    coreGrace: () => Promise.resolve(0),
     vaultAsset: (vault: Address) => Promise.resolve(vault.toLowerCase() === GLD_VAULT ? GLDX : USDG),
+    // No token has a display multiplier, unless a test says so.
+    uiMultipliers: (tokens: readonly Address[]) => Promise.resolve(tokens.map(() => null)),
+    tokensPaused: (tokens: readonly Address[]) => Promise.resolve(tokens.map(() => false)),
     // Every storage word is zero: a vault holds no open reward record unless a test says so.
     storageAt: () => Promise.resolve(0n),
     tokenInfo: (token: Address) => Promise.resolve(token.toLowerCase() === SCHIFFY ? { symbol: "SCHIFFYx", decimals: 18 } : { symbol: "TOKEN", decimals: 18 }),
+    // No registry has set a token since the release, unless a test says so.
+    routerAdmissions: () => Promise.resolve([]),
     // No wallet owns or operates gage's ERC-8004 entry, and none has rated it yet.
     agentAuthorized: () => Promise.resolve(false),
     feedbackCount: () => Promise.resolve(0n),
@@ -368,6 +399,9 @@ export function fakeChain(over: Partial<Record<keyof Chain, unknown>> = {}): Cha
     lpRegistry: () => Promise.resolve({ terms: [604_800, 1_814_400], feeBps: 35, ltvCapBps: 7_500, newLoansPaused: false }),
     lpPoolConfig: () => Promise.resolve({ allowed: true, minHalfWidthTicks: 0, minLoanPrincipal: 0n, maxLoanPrincipal: 1_000_000_000_000n, maxOutstanding: 10_000_000_000_000n }),
     lpVault: () => Promise.resolve(LP_VAULT_STATE),
+    // Every vault an LPVault, with no companion and so no sGAGE, unless a test says so (D454).
+    lpCompanion: () => Promise.resolve(null),
+    lpRewardClaimable: () => Promise.resolve(0n),
     lpFactoryVaults: () => Promise.resolve([]),
     lpFactoryVault: () => Promise.resolve(null),
     lpVaultsAllowed: (_r: Address, vaults: readonly Address[]) => Promise.resolve(vaults.map(() => true)),
@@ -380,7 +414,7 @@ export function fakeChain(over: Partial<Record<keyof Chain, unknown>> = {}): Cha
     async lpMaxRedeem(vault: Address, account: Address) {
       const [st, held] = await Promise.all([this.lpVault(vault), this.lpShares(vault, account)]);
       if (st.impaired) return 0n;
-      const payable = (st.freeCash * (st.totalShares + 10n ** 6n)) / (st.totalAssets + 1n);
+      const payable = (st.freeCash * (st.totalShares + 10n ** 6n)) / ((st.totalAssets ?? 0n) + 1n);
       return held < payable ? held : payable;
     },
     lpPreviewDeposit: (_vault: Address, assets: bigint) => Promise.resolve(assets * 10n ** 6n),
@@ -479,6 +513,20 @@ export const preview = (fills = true) => ({
 });
 
 /**
+ * The rates service's instant answer (`GET /intent/instant/:engine`) as a `fakeUpstream` route: the largest loan for the
+ * tokens asked about, every one of them pledged at 200 USDG a whole token, 75% of its value borrowed at 1%, so an
+ * integration can read a quote with no network.
+ */
+export const instantLoan = () => (path: string) => {
+  const wallet = BigInt(new URL(path, "http://rates.test").searchParams.get("wallet") ?? "0");
+  const value = (wallet * 200_000_000n) / 10n ** 18n, principal = (value * 3n) / 4n, cap = principal + principal / 100n;
+  return { status: 200, body: {
+    schema: "gage-intent-instant-v1", status: "ok", refusal: null, expiresAt: NOW + 30,
+    answer: { collateral: String(wallet), valueUSDG: String(value), principal: String(principal), cap: String(cap), costBps: 100, suggestedBps: 100, ltvBps: 7500, binds: "wallet", room: "0", vaults: 1 },
+  } };
+};
+
+/**
  * The rates service's signed loop plan (`GET /intent/loop/quotes/:engine`) for the loop router `filler`, echoing the core,
  * terms and allocations it is asked for, as a `fakeUpstream` route: every one of its vaults' ceilings is 7 shares.
  */
@@ -562,7 +610,7 @@ export function ctx(over: { d?: Deployment; chain?: Chain; indexer?: Upstream; r
   const indexer = over.indexer ?? fakeUpstream({});
   return {
     d: over.d ?? parseDeployment(manifest()), chain: over.chain ?? fakeChain(), indexer, indexerAt: over.indexerAt ?? (() => indexer),
-    rates: over.rates ?? fakeUpstream({ "/intent/preview/": preview() }), now: () => NOW,
+    rates: over.rates ?? fakeUpstream({ "/intent/preview/": preview(), "/intent/instant/": instantLoan() }), now: () => NOW,
     ...(over.valuation ? { valuation: over.valuation } : {}),
   };
 }

@@ -5,6 +5,8 @@ name: release
 # environment as its publisher, and the `npm` environment waits for a maintainer's approval. A version npm already has is
 # skipped, so a release that published one package and failed on the other is finished by running this workflow again
 # by hand on the tag's commit (`version`, X.Y.Z): gage-mcp 0.7.0 failed on Sigstore's 409 after gage-sdk 0.7.0 published.
+# Once both are on npm, the GitHub release follows, its notes both changelogs' sections for the version. gage's main
+# repository pushes the release commit and its tag here as soon as the version is merged there.
 on:
   push:
     tags: ["v*.*.*"]
@@ -63,3 +65,37 @@ jobs:
             if [ "$(npm view "gage-$p@$v" version 2>/dev/null)" = "$v" ]; then echo "gage-$p@$v is on npm already"; continue; fi
             npm publish "$RUNNER_TEMP"/packed/gage-$p-*.tgz --access public --provenance
           done
+
+  github-release:
+    name: GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Release the tag, with both changelogs' notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+        run: |
+          v="${TAG#v}"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then echo "$TAG has its GitHub release already"; exit 0; fi
+          section() {
+            awk -v h="## $v" 'index($0, h) == 1 && (length($0) == length(h) || substr($0, length(h) + 1, 1) == " ") { f = 1; next }
+              f && /^## / { exit }
+              f' "packages/$1/CHANGELOG.md"
+          }
+          {
+            echo "Both packages are on npm with provenance: \`npm install gage-sdk@$v viem\` and \`npx -y gage-mcp@$v\`. gage-mcp is built on exactly gage-sdk $v."
+            echo
+            echo "## gage-sdk"
+            section sdk
+            echo
+            echo "## gage-mcp"
+            section mcp
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "gage-sdk and gage-mcp $v" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag --latest

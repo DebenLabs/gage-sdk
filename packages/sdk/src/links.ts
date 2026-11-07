@@ -4,17 +4,12 @@
  * lower-case, with one dash between words. Claims are taken in order (a vault's creation, a token's place in the
  * release): the first to claim a link keeps it for good, and a later claim of the same link takes the first characters
  * of its own address after a dash, as few as leave it free. Vault links come from gage's indexer (`GET
- * /intent/partners/links`), which sees every creation; token links are computed here from the release, as the app does.
+ * /intent/partners/links`), which serves the vaults it indexes and the links its committed ledger keeps from earlier
+ * generations; token links are computed here from the release, as the app does.
  */
 
 /** The most characters a name gives a link, before any address suffix. */
 export const LINK_MAX = 40;
-
-/** Links no vault may take: the site's own words, and words that would pass for gage's own vault. */
-export const VAULT_RESERVED: readonly string[] = Object.freeze([
-  "admin", "borrow", "create", "earn", "gage", "help", "lend", "manage", "new", "official", "partner", "partners",
-  "portfolio", "protocol", "support", "team", "vault", "vaults",
-]);
 
 /** Links no token may take: Borrow's own pages under `/borrow/`. */
 export const TOKEN_RESERVED: readonly string[] = Object.freeze(["private", "zap"]);

@@ -5,7 +5,7 @@
  */
 import { createWalletClient, http, type Address, type Chain, type Hex, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { chainFor, robinhoodTestnet } from "./chains.js";
+import { chainFor, robinhoodMainnet } from "./chains.js";
 import { ApiError, requireThat } from "./errors.js";
 import { networkNamed, type Network } from "./networks.js";
 
@@ -17,8 +17,8 @@ export interface Signer {
   sendTransaction(tx: SignerTransaction): Promise<Hex>;
 }
 
-/** A signer over a viem wallet client that carries its account, for `chain`: the client's own, else the testnet. */
-export function viemSigner(client: WalletClient, chain: Chain = client.chain ?? robinhoodTestnet): Signer {
+/** A signer over a viem wallet client that carries its account, for `chain`: the client's own, else Robinhood Chain, as every default here. */
+export function viemSigner(client: WalletClient, chain: Chain = client.chain ?? robinhoodMainnet): Signer {
   const account = client.account;
   if (!account) throw new ApiError("NO_ACCOUNT", "The wallet client has no account to sign with", 400);
   return {

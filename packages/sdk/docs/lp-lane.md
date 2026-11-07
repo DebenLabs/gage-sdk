@@ -1,7 +1,7 @@
 # LP lane
 
 Where a release makes it public (`capabilities().lpLane`), gage lends USDG at a fixed cost against a liquidity position:
-an ETH/USDG or stock/USDG position on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables, in a pool the lane lists. There
+an ETH/USDG or stock/USDG position on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables, in a pool the lane lists. There
 is no liquidation: the loan is never closed early because a price moves, and a loan not repaid by its end is settled by
 unwinding the position for its lenders, nothing else taken. The lane has its own core, registry and LP vaults; lending
 to it is a deposit into an LP vault. Where the lane is not public its reads and actions refuse (`LP_CLOSED`).
@@ -9,7 +9,7 @@ to it is a deposit into an LP vault. Where the lane is not public its reads and 
 [examples/lp.ts](../examples/lp.ts) lists the wallet's positions, borrows against one, repays, and deposits into an LP
 vault.
 
-## The fourteen actions
+## The fifteen actions
 
 | Action | Does |
 |---|---|
@@ -20,8 +20,9 @@ vault.
 | `lp_collect` | collects a running loan's trading fees (a native ETH pool's as WETH), and a Ramses position's rewards |
 | `lp_withdraw` | withdraws what the lane's core credits the wallet (a loan's USDG, fees, rewards) |
 | `lp_deposit` | deposits USDG into an LP vault |
-| `lp_redeem` | withdraws from an LP vault, every share its free cash pays when `shares` is omitted |
+| `lp_redeem` | withdraws from an LP vault, every share it can pay now when `shares` is omitted |
 | `lp_claim_bonus` | claims an LP vault's bonus for a defaulted loan, or every one with a bonus for the wallet |
+| `lp_claim_rewards` | claims what a reserve LP vault's loans earned the wallet in sGAGE |
 | `lp_wrap` | wraps every Fables receipt of one range into one position NFT the lane lends against |
 | `lp_unwrap` | gives a wrapped Fables position back as its receipts |
 | `lp_create_vault` | opens an LP vault through the lane's factory, for a wallet the LP registry lets open one |
@@ -29,7 +30,7 @@ vault.
 | `lp_vault_remove_pool` | drops a pool from the mandate of an LP vault you curate, at once (open loans run on) |
 
 `lp_wrap` and `lp_unwrap` are served where the lane names a Fables adapter, `lp_create_vault` where it names its vault
-factory. Each action's inputs are in the [Reference](reference.md#actions).
+factory, `lp_claim_rewards` where it names its rewards bridge. Each action's inputs are in the [Reference](reference.md#actions).
 
 ## Borrow against a position
 
@@ -77,10 +78,13 @@ repayment, rolls, and withdraws what is credited when it nets more; the position
 
 ```ts
 const { vaults } = await gage.lpVaults();
-const vault = vaults.find((v) => v.takesDeposits);
-if (!vault) throw new Error("No LP vault takes deposits now");
+const vault = vaults.find((v) => v.vault.toLowerCase() === chosen.toLowerCase());
+if (!vault?.takesDeposits) throw new Error("That LP vault takes no deposits now");
 return gage.run({ action: "lp_deposit", vault: vault.vault, amount }, signer);
 ```
+
+`chosen` is the address of the LP vault you chose: curators open their own, so choose by the curator and the pools it funds,
+not by its place in the list.
 
 `lpVaults()` lists the release's LP vaults and those curators opened: size, free cash, loans out, share value, fee, its
 curator, the pools it funds (`mandate`, in words in `funds`), whether the registry still lets it lend (`allowed`), and
@@ -95,6 +99,26 @@ mandate.
   still come back (`DEPOSITS_CLOSED`), and a vault the registry no longer lets lend refuses deposits (`VAULT_NOT_LENDING`).
 - A defaulted loan's sale that brings more than its book value pays a bonus, shared by the lenders by their share of the
   vault and the time they held it while the loan ran: `lp_claim_bonus`.
+
+### Reserve vaults
+
+Where a release names one, a reserve vault is an LP vault that keeps its cash past its curator's buffer in an outside
+ERC-4626, Steakhouse on mainnet, and draws on it for loans and withdrawals. `lpVaults()` names one by its `reserve`; any other vault's row has
+none and reads as it always has.
+
+- `freeCashUSDG` is its cash alone. `reserve.value` is what its reserve shares are worth, `reserve.payable` what the
+  reserve can pay of them now, and `reserve.freeLiquidity` what the vault can pay out now, cash and reserve.
+- `lp_redeem` is refused above `maxRedeem` (`INSUFFICIENT_LIQUIDITY`), which follows its cash and what the reserve can
+  pay, not above its free cash. With no `shares`, it takes a basis point under `maxRedeem` where that is less than the
+  holding, as a share's value grows while the transaction is on its way.
+- What the reserve returns moves, and carries that reserve's own risk. While the reserve cannot be read, `value`,
+  `payable`, `totalAssetsUSDG` and `usdgPerShare` are null, and the vault takes no deposit and pays nothing out; it stays
+  listed. A wallet's portfolio shows its holding's `valueUSDG` as null then.
+- `reserve.minCostBpsPerYear` is the least a loan must cost it, a year at its rate.
+- Its holders also share sGAGE from its loans, outside the share price and with no fee, each by its share of the vault
+  while it arrived, and keep it once their shares are gone. `portfolio().lp.vaults` says what the wallet may claim
+  (`sgageClaimable`, raw, 18 decimals; null where that read failed). `lp_claim_rewards` claims it and moves no USDG:
+  `NOT_RESERVE_VAULT` on a vault with no reserve, `NOTHING_TO_CLAIM` with none to claim.
 
 ## Curators
 

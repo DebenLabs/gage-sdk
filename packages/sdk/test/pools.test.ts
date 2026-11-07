@@ -220,9 +220,9 @@ describe("poolVaults", () => {
     expect(pools[0]!.sides[1]).toEqual({ symbol: "frxUSD", token: null, lent: false, vault: null, factory: null, link: null });
   });
 
-  it("comes as two tools that never sign: gage_pool_vaults and gage_create_pool_vaults", async () => {
+  it("comes with the vault tools that never sign: gage_pool_vaults, gage_create_pool_vaults and one vault's", async () => {
     const tools = poolVaultTools(gage().gage);
-    expect(tools.map((t) => [t.name, t.annotations.readOnlyHint])).toEqual([["gage_pool_vaults", true], ["gage_create_pool_vaults", true]]);
+    expect(tools.map((t) => [t.name, t.annotations.readOnlyHint])).toEqual([["gage_pool_vaults", true], ["gage_create_pool_vaults", true], ["gage_create_partner_vault", true], ["gage_vault_on_chain", true]]);
     // The create tool says its vaults leave the pool's own tokens out, and how a caller who means one says so.
     expect(Object.keys(tools[1]!.inputSchema.shape)).toContain("allowPoolTokens");
     expect(tools[1]!.description).toContain("allowPoolTokens");

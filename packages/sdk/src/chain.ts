@@ -1,11 +1,12 @@
-import { BaseError, ContractFunctionExecutionError, ContractFunctionRevertedError, createPublicClient, erc20Abi, http, toHex, type Address, type ContractFunctionParameters, type Hex, type Log } from "viem";
+import { BaseError, ContractFunctionExecutionError, ContractFunctionRevertedError, createPublicClient, erc20Abi, getAbiItem, http, toHex, type Address, type ContractFunctionParameters, type Hex, type Log } from "viem";
 import { simulateCalls } from "viem/actions";
 import {
-  accountAbi, accrualAbi, agentIdentityAbi, cashoutRouterAbi, clPoolAbi, engineAbi, exitDeskAbi, exitFactoryAbi, exitVaultAbi, fablesHookAbi, fablesWrapperAbi, factoryAbi,
-  flashSourceAbi, generationDeployerAbi, lenderMarketAbi, loopRouterAbi, lpAdapterAbi, lpCoreAbi, lpRegistryAbi, rehypoSourceAbi, shareViewsAbi, lpVaultAbi, lpVaultFactoryAbi, partnerVault4626Abi, partnerVaultAbi, permit2Abi, positionManagerAbi, privateRouterAbi, ramsesManagerAbi, registryAbi, reputationAbi, rewardsAbi,
-  rolloverRouterAbi, stateViewAbi, v3ManagerAbi, v3PoolAbi, v4ManagerAbi,
+  accountAbi, accrualAbi, agentIdentityAbi, assetPolicyAbi, cashoutRouterAbi, clPoolAbi, engineAbi, exitDeskAbi, exitFactoryAbi, exitVaultAbi, fablesHookAbi, fablesWrapperAbi, factoryAbi,
+  flashSourceAbi, generationDeployerAbi, lenderMarketAbi, loopRouterAbi, lpAdapterAbi, lpCoreAbi, lpRegistryAbi, lpReserveVaultAbi, rehypoSourceAbi, shareViewsAbi, lpVaultAbi, lpCompanionAbi, lpVaultFactoryAbi, partnerVault4626Abi, partnerVaultAbi, permit2Abi, positionManagerAbi, privateRouterAbi, ramsesManagerAbi, registryAbi, reputationAbi, rewardsAbi,
+  rolloverRouterAbi, stateViewAbi, stockTokenAbi, v3ManagerAbi, v3PoolAbi, v4ManagerAbi, vaultManagerAbi,
 } from "./abi.js";
-import { MULTICALL3 } from "./chains.js";
+import { MULTICALL3, robinhoodMainnet, robinhoodTestnet } from "./chains.js";
+import { MAINNET, TESTNET } from "./deployment.js";
 import type { ExitAsk, ExitRecord, ExitShare } from "./exitChoice.js";
 import { ApiError, requireThat } from "./errors.js";
 
@@ -47,7 +48,7 @@ export interface CashoutExit {
 
 /**
  * One loan of the LP lane's core as it stores it (`LPCore.loan`, docs/api.md "LP lane"): its state 0 NONE (no such
- * loan), 1 ACTIVE, 2 REPAID, 3 DEFAULTED, 4 ABANDONED; `end` and `start` in Unix seconds.
+ * loan), 1 ACTIVE, 2 REPAID, 3 DEFAULTED, 4 ABANDONED, 5 ROLLED; `end` and `start` in Unix seconds.
  */
 export interface LpLoan {
   id: bigint; borrower: Address; vault: Address; adapter: Address; escrow: Address; pool: Address; tokenId: bigint;
@@ -62,14 +63,26 @@ export interface LpPoolConfig { allowed: boolean; minHalfWidthTicks: number; min
 /** One pool of an LP vault's mandate (D318): under which adapter, and from when it funds new loans (Unix seconds). */
 export interface LpMandatePool { adapter: Address; pool: Address; activeAt: number }
 /**
- * An LP vault's book and switches, read in one call, so at one block; its curator, and its mandate (D318: the pools it
- * funds, null for a vault that names none).
+ * A reserve vault's companion (D454), read apart from the vault: its reserve's token, the reserve shares it holds, what they
+ * are worth and what the reserve can pay of them, what the vault can pay out now (`freeLiquidity`: cash and reserve, past
+ * credits and bonuses), what its curator set, and the sGAGE indexed and not yet claimed. Each null where its read failed.
+ */
+export interface LpReserveState {
+  companion: Address; token: Address | null; shares: bigint | null; value: bigint | null; payable: bigint | null; freeLiquidity: bigint | null;
+  bufferBps: number | null; minCostBpsPerYear: number | null; closed: boolean | null; rewardsAccounted: bigint | null;
+}
+/**
+ * An LP vault's book and switches, read in one call, so at one block; its curator, its mandate (D318: the pools it
+ * funds, null for a vault that names none) and its reserve (D454: null for an LPVault).
  */
 export interface LpVaultState {
-  /** `totalShares` is the share token's `totalSupply()` (D319). */
-  asset: Address; core: Address; totalAssets: bigint; freeCash: bigint; totalShares: bigint; outstandingPrincipal: bigint; bonusHeld: bigint;
+  /**
+   * `totalShares` is the share token's `totalSupply()` (D319). `totalAssets` is null only on a reserve vault, whose
+   * `totalAssets` reverts while reserve shares are held and the reserve's conversion fails; an LPVault's never does.
+   */
+  asset: Address; core: Address; totalAssets: bigint | null; freeCash: bigint; totalShares: bigint; outstandingPrincipal: bigint; bonusHeld: bigint;
   impaired: boolean; depositsClosed: boolean; fundingPaused: boolean; maxLoanPrincipal: bigint; performanceFeeBps: number; openLoans: number;
-  curator: Address; mandate: LpMandatePool[] | null;
+  curator: Address; mandate: LpMandatePool[] | null; reserve: LpReserveState | null;
 }
 /** The positions an ERC-721 position manager says `owner` holds: their count and the ids read, newest first; `enumerable` false where it cannot list them. */
 export interface OwnedPositions { total: bigint; ids: bigint[]; enumerable: boolean }
@@ -115,6 +128,19 @@ export interface ExitRead { shares: bigint; id: bigint; nonce: bigint; committed
  * loans, root D394), its loans (`performingPrincipal` plus `accruedInterest`) and its share supply; and its free cash
  * (`freeLiquidity`, what it can pay out now), which the shortfall no longer reads. */
 export interface ExitVaultBook { claim: bigint; free: bigint; held: bigint; loans: bigint; supply: bigint }
+
+/**
+ * A partner vault as its curator manages it, read in one call at one block: who may, where its asset policy and market
+ * are, what it is set to now, and what waits. `categoryWeights` and `pendingLimits` are in the policy's order (four
+ * categories: STOCK, MEME, RH_ECOSYSTEM, COMMODITY; eight limits: `IntentLimit`), a limit with no change waiting at
+ * `readyAt` zero, and `pendingBuyReadyAt` zero with no change to buying loans waiting.
+ */
+export interface VaultManagerState {
+  curator: Address; policy: Address; market: Address; mandateVersion: number; name: string; categoryMask: number; paused: boolean; fillersOpen: boolean; feeRecipient: Address;
+  executionCapBps: number; maxLoanPrincipal: bigint; maxAssetBps: number; bufferBps: number; minRateGrade: number; categoryWeights: number[];
+  pendingLimits: { value: bigint; readyAt: number }[];
+  buysLoans: boolean; buyExtraBps: number; buysOnly: boolean; pendingBuyExtraBps: number; pendingBuyReadyAt: number;
+}
 
 /** The contracts one `GenerationDeployed` names, lowercase, with its id, asset, name and block. */
 export interface DeployedGenerationRead {
@@ -189,6 +215,8 @@ export interface Chain {
   rolloverPaused(router: Address): Promise<boolean>;
   /** Whether a cash-out router admits `executor` for `cashOutVia`; null for a router built before D245, which has no such sale. */
   cashoutExecutorAllowed(router: Address, executor: Address): Promise<boolean | null>;
+  /** The pool a cash-out router flash-borrows from (`FLASH_POOL()`), what its sales through an aggregator rest on; null for a router that has none, such as a v4 router. */
+  cashoutFlashPool(router: Address): Promise<Address | null>;
   /**
    * What `cashOutDetailed` would pay `from` through gage's own routes now, its `eth_call` read (the app's weighing of an
    * aggregator's sale, web/src/v2/CashoutFlow.tsx); null when it would revert: a route the router does not admit, a
@@ -203,6 +231,14 @@ export interface Chain {
    */
   intentFactory(factory: Address, account: Address, tokens: readonly Address[]): Promise<IntentFactoryState>;
   vaultCore(vault: Address): Promise<Address>;
+  /** A partner vault as its curator manages it, at one block; null for a vault too early to name its limits (before mandate 12). */
+  vaultManager(vault: Address): Promise<VaultManagerState | null>;
+  /** Whether a vault's asset policy lends against each of `tokens`, and when each waiting to be added may be (zero for none). */
+  policyTokens(policy: Address, tokens: readonly Address[]): Promise<{ picked: boolean; readyAt: number }[]>;
+  /** The most `owner` can redeem from a partner vault now (ERC-4626's `maxRedeem`: none at a settlement due); null for a vault before ERC-4626. */
+  vaultMaxRedeem(vault: Address, owner: Address): Promise<bigint | null>;
+  /** What a sale of a running loan is charged on a core (`tradeFeeBps`), from its registry. */
+  tradeFeeBps(registry: Address): Promise<number>;
   vaultShares(vault: Address, wallet: Address): Promise<bigint>;
   /** The vault's book, its four figures read in one call, so at one block. */
   vaultBook(vault: Address): Promise<VaultBook>;
@@ -210,12 +246,27 @@ export interface Chain {
   vaultRewards(vault: Address, wallet: Address): Promise<bigint>;
   /** What a core pays and is repaid in (`USDG()`): USDG, or its generation's lend asset (D251, Intent D55). */
   coreAsset(core: Address): Promise<Address>;
+  /** How long past a loan's term a core still takes its repayment (`GRACE()`), seconds: none on any core since V3, 48 hours on the two before. */
+  coreGrace(core: Address): Promise<number>;
   /** What a partner vault takes and pays out (`USDG()`): its generation's lend asset. */
   vaultAsset(vault: Address): Promise<Address>;
+  /** Each token's display multiplier (`uiMultiplier()`, 18 decimals), in their order, at one block; null for a token that has none. */
+  uiMultipliers(tokens: readonly Address[]): Promise<(bigint | null)[]>;
+  /**
+   * Whether each token says it is paused (`paused()`, a Stock Token's own pause or its beacon's, D213), in their order, at
+   * one block: such a token cannot move until it resumes. False for a token with no such entry.
+   */
+  tokensPaused(tokens: readonly Address[]): Promise<boolean[]>;
   /** One storage word of `address` at the head: where a partner vault's open reward-record count is read (src/gas.ts). */
   storageAt(address: Address, slot: bigint): Promise<bigint>;
-  /** A token's symbol and decimals, for collateral a lend-asset generation names outside the release's asset list. */
-  tokenInfo(token: Address): Promise<{ symbol: string; decimals: number }>;
+  /** A token's symbol and decimals, and its name where it answers one: collateral the release's asset list does not name. */
+  tokenInfo(token: Address): Promise<{ symbol: string; decimals: number; name?: string }>;
+  /**
+   * Every router `registry` admitted from block `from` to block `to` (`RouterSet` allowing it), each as often as it was, one
+   * since removed among them: what it opened stays open. Read in spans of `LOG_SPAN`; a node that will not read that many
+   * fails the read.
+   */
+  routerAdmissions(registry: Address, from: bigint, to: bigint): Promise<Address[]>;
   /** Whether `wallet` owns or operates ERC-8004 agent `agentId` (`isAuthorizedOrOwner`), whose own ratings the registry refuses. */
   agentAuthorized(identityRegistry: Address, wallet: Address, agentId: bigint): Promise<boolean>;
   /** How many ratings `wallet` has given ERC-8004 agent `agentId` (`getLastIndex`), revoked ones included. */
@@ -230,8 +281,12 @@ export interface Chain {
   lpRegistry(registry: Address): Promise<LpRegistryState>;
   /** A pool's admission and caps under `adapter` on the LP registry. */
   lpPoolConfig(registry: Address, adapter: Address, pool: Address): Promise<LpPoolConfig>;
-  /** An LP vault's book and switches, at one block. */
+  /** An LP vault's book and switches, at one block, and a reserve vault's companion apart. */
   lpVault(vault: Address): Promise<LpVaultState>;
+  /** A reserve vault's companion (`COMPANION()`, D454), null for an LPVault, which lacks the name. A node's refusal fails the read. */
+  lpCompanion(vault: Address): Promise<Address | null>;
+  /** The sGAGE `account` may claim from a reserve vault's companion now (`rewardClaimable`: as indexed so far). */
+  lpRewardClaimable(companion: Address, account: Address): Promise<bigint>;
   /** Every vault an LP vault factory opened (`vaults`), oldest first, with the name each was opened with (`nameOf`). */
   lpFactoryVaults(factory: Address): Promise<{ address: Address; name: string }[]>;
   /** The name an LP vault factory opened `vault` with, or null where the factory did not open it (`isVault`). */
@@ -244,7 +299,7 @@ export interface Chain {
   lpShares(vault: Address, account: Address): Promise<bigint>;
   /** An LP vault's share decimals (`decimals()`): 18 since D331, 12 for a vault opened before it (src/lpShares.ts). */
   lpShareDecimals(vault: Address): Promise<number>;
-  /** The most of `account`'s shares an LP vault redeems now (ERC-4626's `maxRedeem`: its holding up to what the free cash pays, none while impaired). */
+  /** The most of `account`'s shares an LP vault redeems now (ERC-4626's `maxRedeem`: its holding up to what the free cash pays, and a reserve vault's reserve, none while impaired or while that reserve cannot be read). */
   lpMaxRedeem(vault: Address, account: Address): Promise<bigint>;
   /** The shares `assets` USDG would buy in an LP vault now (`previewDeposit`). */
   lpPreviewDeposit(vault: Address, assets: bigint): Promise<bigint>;
@@ -431,6 +486,34 @@ const unread = (r: Tried | undefined, functionName: string): Error =>
   r?.status === "failure" && r.error instanceof Error ? r.error : new Error(`${functionName}: the chain's answer could not be read`);
 
 /**
+ * D454: a vault's `COMPANION()` answer: a nonzero address is a reserve vault's companion; zero, or a revert with no data
+ * (an LPVault lacks the name), is none. Any other failure throws: a node's refusal is never taken for an LPVault, whose
+ * redemptions and words differ.
+ */
+export function lpCompanionFrom(r: Tried | undefined): Address | null {
+  if (emptyRevert(r, "COMPANION")) return null;
+  const x = r?.status === "success" ? r.result : undefined;
+  if (typeof x !== "string") throw unread(r, "COMPANION");
+  return BigInt(x) === 0n ? null : x as Address;
+}
+
+/** What `lpReserveFrom` reads of a companion, in order. */
+const LP_RESERVE_READS = ["RESERVE", "reserveShares", "reserveValue", "reservePayable", "freeLiquidity", "bufferBps", "minCostBpsPerYear", "reserveClosed", "accountedRewards"] as const;
+
+/**
+ * D454: a companion's answers to `LP_RESERVE_READS`, each read's failure leaving its own field null and never failing the
+ * vault's read; `payable` null too where `reservePayable` says the reserve's reads failed.
+ */
+export function lpReserveFrom(companion: Address, reads: readonly Tried[]): LpReserveState {
+  const got = <T>(n: number) => (reads[n]?.status === "success" ? reads[n].result as T : null);
+  const payable = got<readonly [boolean, bigint]>(3), bps = (n: number) => { const v = got<number>(n); return v === null ? null : Number(v); };
+  return {
+    companion, token: got<Address>(0), shares: got<bigint>(1), value: got<bigint>(2), payable: payable?.[0] ? payable[1] : null, freeLiquidity: got<bigint>(4),
+    bufferBps: bps(5), minCostBpsPerYear: bps(6), closed: got<boolean>(7), rewardsAccounted: got<bigint>(8),
+  };
+}
+
+/**
  * SEC-01 (root D391): one block's `exitShare` answers, in order, as `{ exposure, supply }`; null when a read reverted
  * with no data (share views before D391 answer none). Any other failure, or an answer that is not a pair of amounts,
  * throws: a node's refusal is never taken for an earlier generation.
@@ -490,8 +573,22 @@ export function privateLoansFrom(core: Address, routers: number, ids: readonly b
   });
 }
 
+/** The most blocks the chain's public node reads logs over in one query, for one address and one event. */
+export const LOG_SPAN = 10_000_000n;
+/** Blocks `from` to `to` in ranges of `LOG_SPAN` at most, none left out. */
+export function logSpans(from: bigint, to: bigint): { fromBlock: bigint; toBlock: bigint }[] {
+  const out: { fromBlock: bigint; toBlock: bigint }[] = [];
+  for (let at = from; at <= to; at += LOG_SPAN) {
+    const end = at + LOG_SPAN - 1n;
+    out.push({ fromBlock: at, toBlock: end < to ? end : to });
+  }
+  return out;
+}
+
 export function createChain(rpcUrl: string, chainId: number): Chain {
-  const client = createPublicClient({ transport: http(rpcUrl, { timeout: 15_000, retryCount: 1 }), cacheTime: 0 });
+  // Reads asked together go as one call to Multicall3, each with its own answer or revert: viem needs the chain to know where that is.
+  const chain = chainId === MAINNET ? robinhoodMainnet : chainId === TESTNET ? robinhoodTestnet : undefined;
+  const client = createPublicClient({ ...(chain ? { chain } : {}), batch: { multicall: true }, transport: http(rpcUrl, { timeout: 15_000, retryCount: 1 }), cacheTime: 0 });
   let checked = false;
   const ready = async () => {
     if (checked) return;
@@ -513,6 +610,7 @@ export function createChain(rpcUrl: string, chainId: number): Chain {
     await ready();
     return await client.multicall({ multicallAddress: MULTICALL3, allowFailure: true, batchSize: 0, contracts });
   };
+  const companionOf = async (vault: Address) => lpCompanionFrom((await tried([{ address: vault, abi: lpReserveVaultAbi, functionName: "COMPANION" }]))[0]);
   return {
     async head() {
       await ready();
@@ -604,6 +702,11 @@ export function createChain(rpcUrl: string, chainId: number): Chain {
     async cashoutExecutorAllowed(router, executor) {
       try { return await read<boolean>(router, cashoutRouterAbi, "executorAllowed", [executor]); } catch { return null; }
     },
+    async cashoutFlashPool(router) {
+      // A router without one has no such entry, and the call reverts; a failure of the RPC fails the read.
+      const [r] = await tried([{ address: router, abi: flashSourceAbi, functionName: "FLASH_POOL" }]);
+      return r?.status === "success" ? r.result as Address : null;
+    },
     async cashoutRouteNet(router, exit, from) {
       await ready();
       try {
@@ -626,6 +729,41 @@ export function createChain(rpcUrl: string, chainId: number): Chain {
       };
     },
     vaultCore: (vault) => read<Address>(vault, partnerVaultAbi, "VAULT"),
+    async vaultManager(vault) {
+      const at = { address: vault, abi: vaultManagerAbi } as const;
+      const names = ["CURATOR", "ASSET_POLICY", "LENDER_MARKET", "MANDATE_VERSION", "name", "CATEGORY_MASK", "paused", "fillersOpen", "feeRecipient", "executionCapBps", "maxLoanPrincipal", "maxAssetBps", "bufferBps", "minRateGrade"] as const;
+      // A vault before mandate 12 has no asset policy limits or name, and those reads revert; a failure of the RPC fails the read.
+      const reads = await tried([...names.map((functionName) => ({ ...at, functionName })), ...[0, 1, 2, 3].map((category) => ({ ...at, functionName: "categoryWeightBps", args: [category] }))]);
+      if (reads.some((r) => r.status !== "success")) return null;
+      const [curator, policy, market, version, name, mask, paused, fillersOpen, feeRecipient, cap, maxLoan, maxAsset, buffer, grade, ...weights] = reads.map((r) => r.result) as
+        [Address, Address, Address, bigint, string, number, boolean, boolean, Address, number, bigint, number, number, number, ...number[]];
+      const on = { address: policy, abi: assetPolicyAbi } as const;
+      const [pending, rest] = await Promise.all([
+        all([0, 1, 2, 3, 4, 5, 6, 7].map((limit) => ({ ...on, functionName: "pendingLimit", args: [limit] }))) as Promise<(readonly [bigint, bigint])[]>,
+        all((["secondaryEnabled", "minExtraAnnualReturnBps", "pendingExtraBps", "pendingReadyAt"] as const).map((functionName) => ({ ...on, functionName }))) as Promise<[boolean, number, number, bigint]>,
+      ]);
+      // Only mandate 13's vaults can be created to buy alone.
+      const [only] = await tried([{ ...on, functionName: "SECONDARY_ONLY" }]);
+      return {
+        curator, policy, market, mandateVersion: Number(version), name, categoryMask: Number(mask), paused, fillersOpen, feeRecipient, executionCapBps: Number(cap), maxLoanPrincipal: maxLoan,
+        maxAssetBps: Number(maxAsset), bufferBps: Number(buffer), minRateGrade: Number(grade), categoryWeights: weights.map(Number),
+        pendingLimits: pending.map(([value, readyAt]) => ({ value, readyAt: Number(readyAt) })),
+        buysLoans: rest[0], buyExtraBps: Number(rest[1]), buysOnly: only?.status === "success" && only.result === true, pendingBuyExtraBps: Number(rest[2]), pendingBuyReadyAt: Number(rest[3]),
+      };
+    },
+    async policyTokens(policy, tokens) {
+      if (!tokens.length) return [];
+      const reads = await all(tokens.flatMap((token) => [
+        { address: policy, abi: assetPolicyAbi, functionName: "picked", args: [token] }, { address: policy, abi: assetPolicyAbi, functionName: "readyAt", args: [token] },
+      ]));
+      return tokens.map((_, n) => ({ picked: reads[2 * n] === true, readyAt: Number(reads[2 * n + 1]) }));
+    },
+    async vaultMaxRedeem(vault, owner) {
+      // A vault before ERC-4626 has no such entry, and the call reverts; a failure of the RPC fails the read.
+      const [r] = await tried([{ address: vault, abi: partnerVault4626Abi, functionName: "maxRedeem", args: [owner] }]);
+      return r?.status === "success" ? r.result as bigint : null;
+    },
+    tradeFeeBps: async (registry) => Number(await read<number>(registry, registryAbi, "tradeFeeBps")),
     vaultShares: (vault, wallet) => read<bigint>(vault, partnerVaultAbi, "balanceOf", [wallet]),
     async vaultBook(vault) {
       await ready();
@@ -643,7 +781,18 @@ export function createChain(rpcUrl: string, chainId: number): Chain {
     pocketClaimable: (vault, pocket, wallet) => read<bigint>(vault, partnerVaultAbi, "pocketClaimable", [pocket, wallet]),
     vaultRewards: (vault, wallet) => read<bigint>(vault, partnerVaultAbi, "rewardClaimable", [wallet]),
     coreAsset: (core) => read<Address>(core, engineAbi, "USDG"),
+    coreGrace: (core) => read<number>(core, engineAbi, "GRACE"),
     vaultAsset: (vault) => read<Address>(vault, partnerVaultAbi, "USDG"),
+    async uiMultipliers(tokens) {
+      if (!tokens.length) return [];
+      // A token that is no Stock Token has no such entry, and the call reverts; a failure of the RPC fails the read.
+      return (await tried(tokens.map((token) => ({ address: token, abi: stockTokenAbi, functionName: "uiMultiplier" })))).map((r) => (r.status === "success" ? r.result as bigint : null));
+    },
+    async tokensPaused(tokens) {
+      if (!tokens.length) return [];
+      // A token with no pause has no such entry, and the call reverts; a failure of the RPC fails the read.
+      return (await tried(tokens.map((token) => ({ address: token, abi: stockTokenAbi, functionName: "paused" })))).map((r) => r.status === "success" && r.result === true);
+    },
     async storageAt(address, slot) {
       await ready();
       const word = await client.getStorageAt({ address, slot: toHex(slot, { size: 32 }) });
@@ -651,8 +800,22 @@ export function createChain(rpcUrl: string, chainId: number): Chain {
       return BigInt(word);
     },
     async tokenInfo(token) {
-      const [symbol, decimals] = await Promise.all([read<string>(token, erc20Abi, "symbol"), read<number>(token, erc20Abi, "decimals")]);
-      return { symbol, decimals: Number(decimals) };
+      const [symbol, decimals, name] = await Promise.all([
+        read<string>(token, erc20Abi, "symbol"), read<number>(token, erc20Abi, "decimals"),
+        // A token without a name still has its symbol.
+        read<string>(token, erc20Abi, "name").catch(() => undefined),
+      ]);
+      return { symbol, decimals: Number(decimals), ...(name === undefined ? {} : { name }) };
+    },
+    async routerAdmissions(registry, from, to) {
+      await ready();
+      // One registry and one event a call: the chain's public node refuses a list of addresses, and a range over `LOG_SPAN`.
+      const routers: Address[] = [];
+      for (const span of logSpans(from, to)) {
+        const logs = await client.getLogs({ address: registry, event: getAbiItem({ abi: registryAbi, name: "RouterSet" }), ...span, strict: true });
+        routers.push(...logs.filter((l) => l.args.allowed).map((l) => l.args.router));
+      }
+      return routers;
     },
     agentAuthorized: (identityRegistry, wallet, agentId) => read<boolean>(identityRegistry, agentIdentityAbi, "isAuthorizedOrOwner", [wallet, agentId]),
     feedbackCount: (reputationRegistry, agentId, wallet) => read<bigint>(reputationRegistry, reputationAbi, "getLastIndex", [agentId, wallet]),
@@ -680,17 +843,30 @@ export function createChain(rpcUrl: string, chainId: number): Chain {
     async lpVault(vault) {
       const at = { address: vault, abi: lpVaultAbi } as const;
       const names = ["USDG", "CORE", "totalAssets", "freeCash", "totalSupply", "outstandingPrincipal", "totalBonusHeld", "impaired", "depositsClosed", "fundingPaused", "maxLoanPrincipal", "PERFORMANCE_FEE_BPS", "openLoans", "CURATOR"] as const;
-      // The mandate is read apart: a vault built before D318 names none (null).
-      const [values, [mandate]] = await Promise.all([all(names.map((functionName) => ({ ...at, functionName }))), tried([{ ...at, functionName: "mandate" }])]);
+      // The mandate and the reserve are read apart: a vault built before D318 names no mandate (null), and an LPVault no
+      // companion (D454), so one new name never fails the book's read.
+      const [book, [mandate], reserve] = await Promise.all([
+        tried(names.map((functionName) => ({ ...at, functionName }))), tried([{ ...at, functionName: "mandate" }]),
+        companionOf(vault).then(async (companion) => (companion ? lpReserveFrom(companion, await tried(LP_RESERVE_READS.map((functionName) => ({ address: companion, abi: lpCompanionAbi, functionName })))) : null)),
+      ]);
+      // Every read of the book must answer, at one block, but a reserve vault's totalAssets, which reverts while its reserve's conversion fails.
+      const values = book.map((r, n) => {
+        if (r.status === "success") return r.result;
+        if (reserve && names[n] === "totalAssets") return null;
+        throw unread(r, names[n]!);
+      });
       const [asset, core, totalAssets, freeCash, totalShares, outstandingPrincipal, bonusHeld, impaired, depositsClosed, fundingPaused, maxLoanPrincipal, fee, open, curator] =
-        values as [Address, Address, bigint, bigint, bigint, bigint, bigint, boolean, boolean, boolean, bigint, number, readonly bigint[], Address];
+        values as [Address, Address, bigint | null, bigint, bigint, bigint, bigint, boolean, boolean, boolean, bigint, number, readonly bigint[], Address];
       const m = mandate?.status === "success" ? mandate.result as readonly [readonly { adapter: Address; pool: Address }[], readonly number[]] : null;
       return {
         asset, core, totalAssets, freeCash, totalShares, outstandingPrincipal, bonusHeld, impaired, depositsClosed, fundingPaused, maxLoanPrincipal,
         performanceFeeBps: Number(fee), openLoans: open.length, curator,
         mandate: m ? m[0].map((p, n) => ({ adapter: p.adapter, pool: p.pool, activeAt: Number(m[1][n] ?? 0) })) : null,
+        reserve,
       };
     },
+    lpCompanion: (vault) => companionOf(vault),
+    lpRewardClaimable: (companion, account) => read<bigint>(companion, lpCompanionAbi, "rewardClaimable", [account]),
     async lpFactoryVaults(factory) {
       // Paged through vaultCount and vaultsFrom where the factory has them: one vaults() call outgrows a node's gas cap
       // once creation is open (r12 review C15). A factory built before them answers vaults() whole.

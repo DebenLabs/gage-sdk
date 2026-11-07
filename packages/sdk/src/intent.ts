@@ -33,32 +33,60 @@ const FLOOR_CODES: ReadonlySet<string> = new Set(["BELOW_RETURN_FLOOR", "BELOW_V
  */
 const REFUSALS: Record<string, string> = {
   ABOVE_MARKET_LIMIT: "The loan repays more than this collateral's limit allows; borrow less",
+  ALLOCATION_UNAVAILABLE: "The listing has fewer lender quarters left than this plan asks for",
+  ASSET_LIMIT: "This loan passes the partner vault's limit for this token",
+  ASSET_NOT_IN_MANDATE: "The partner vault does not lend against this token",
   ASSET_OPEN_CAP: "Loans against this token are at their limit now",
+  BELOW_RETURN_FLOOR: "The loan would earn less than the partner vaults' minimum: raise its cost",
+  BELOW_VAULT_REGISTRY_FLOOR: "The loan would earn less than the partner vaults' floor on the model's cost: raise its cost",
+  BORROWER_IS_CURATOR: "A partner vault does not fund its own manager's loan",
+  CATEGORY_LIMIT: "This loan passes the partner vault's limit for this kind of token",
+  CHAIN_UNAVAILABLE: "gage's rates service could not read the chain now; try again shortly",
   COLLATERAL_ABOVE_MAXIMUM: "The pledge is over the token's maximum",
   COLLATERAL_BELOW_MINIMUM: "The pledge is under the token's minimum",
   COLLATERAL_NOT_ALLOWED: "gage does not take this token as collateral now",
+  CORE_REFUSES: "gage's core refuses this listing now",
+  EMPTY_PLAN: "No partner vault of this asset is there to fund this loan yet",
   FILLER_NOT_ADMITTED: "gage's filler is not admitted for this loan now",
   FILLS_CLOSED: "The partner vaults are not filling loans now",
+  FUNDING_DEADLINE_INVALID: "The funding deadline is outside what the core takes",
+  FUNDING_DEADLINE_TOO_CLOSE: "The listing's funding deadline is too close to fund safely",
+  GRADE_TOO_LOW: "This token's published grade is under the partner vault's minimum",
   INCOMPLETE_PLAN: "The partner vaults fund only part of this loan now",
+  INSUFFICIENT_LIQUIDITY: "The partner vault cannot pay this and keep the cash it must leave free",
   LEVERAGE_CLOSED: "Leverage is not offered here now",
   LISTINGS_PAUSED: "New loans are paused",
+  LOAN_LIMIT: "This loan passes the partner vault's limit per loan",
   LOAN_NOT_ACTIVE: "The loan is not running",
   NO_COST_OFFERED: "gage's rates model offers no cost for these terms now",
   NO_FILLER: "No filler is set to fund this loan now",
+  NO_MODELED_COST: "gage's rates model has no cost it can sign for this now",
+  NOT_FACTORY_SIGNER: "gage's rates service cannot sign now; try again later",
   NOT_RIGHT_HOLDER: "This wallet does not hold the loan's right",
   PRICING_EXPIRED: "The price expired before it was signed; prepare again",
+  PRICING_PROVISIONAL: "gage's rates model has only a provisional price for this now; try again shortly",
   PRICING_UNAVAILABLE: "gage's rates model cannot price this now; try again shortly",
   PRINCIPAL_TOO_SMALL: "The loan is smaller than the partner vaults fund; borrow more",
+  PRIVATE_LOAN: "This loan cannot be rolled over here: repay it before it ends",
   PURCHASE_TOO_SMALL: "A vault's part of this loan would be under its smallest",
   PUT_CLOSED: "Puts do not close or roll on this loan's core",
+  RECORD_LIMIT: "The partner vault holds the most open loans it may until one is settled",
+  REGISTRY_COST_MISSING: "The partner vault cannot fund this: gage has no current modeled cost for this token and term",
   RETURN_ABOVE_PRINCIPAL: "The loan would cost more than it lends",
   ROLLOVER_CLOSED: "Rolling over is not offered for this loan's core",
   ROUTER_NOT_ADMITTED: "gage's router is not admitted to fill this loan now",
+  SECONDARY_ONLY: "The partner vault buys running loans alone and funds no new one",
   SELF_DEALING: "This wallet is one of gage's own routers or fillers: no vault funds it",
+  SETTLEMENT_DUE: "A partner vault has a loan past its end to settle first; try again shortly",
   SIGNER_NOT_CONFIGURED: "gage's rates service cannot sign now; try again later",
   TERM_NOT_ALLOWED: "The partner vaults do not lend for this term",
+  TERM_TOO_LONG: "This term is longer than the partner vault allows",
   TOO_LATE: "The loan ends too soon to roll; repay it before it ends",
   UNSUPPORTED_COLLATERAL: "gage does not take this token as collateral now",
+  VAULT_EMPTY: "The partner vault holds no deposits",
+  VAULT_FILLS_CLOSED: "The partner vault's manager has closed it to gage's automatic funding",
+  VAULT_PAUSED: "The partner vault is paused",
+  WRONG_ENGINE: "This engine is not one gage's rates service lends on",
 };
 
 /** A refusal of the rates service: its code when gage-sdk knows it, in gage-sdk's words; else `own`, in `fallback`. */
@@ -213,7 +241,7 @@ const INSTANT_REASONS: Record<string, [code: string, words: string]> = {
   DRY: ["INSUFFICIENT_CAPACITY", "No partner vault has the free cash or room for a loan against this pledge now"],
   EMPTY: ["INSUFFICIENT_CAPACITY", "No partner vault that lends against this token holds deposits now"],
   TERM: ["TERM_NOT_FUNDED", "No partner vault lends against this token for this term now; try another term"],
-  NONE: ["UNSUPPORTED_COLLATERAL", "gage does not take this token as collateral now"],
+  NONE: ["NO_VAULT_LENDS", "No partner vault takes this token right now"],
   CLOSED: ["LISTINGS_PAUSED", "New loans are paused"],
   SELF: ["SELF_DEALING", "This wallet is one of gage's own routers or fillers: no vault funds it"],
   NO_SUGGESTION: ["NO_SUGGESTION", "gage's rates model offers no loan against this pledge now"],
@@ -366,16 +394,22 @@ function walletOf(w: NonNullable<z.output<typeof rollSchema>["wallet"]>, t: Roll
  * The roll's figures now: the new loan and the wallet's part, or the service's refusal as its own code. A roll keeps
  * the loan's size, as a roll by itself must (`PrincipalMismatch`): the new principal is the old one, or nothing is planned.
  */
-export async function rollFigures(rates: Upstream, a: RollAsk & { oldPrincipal: bigint; oldCap: bigint }): Promise<{ terms: RollTerms; wallet: RollWallet }> {
-  const body = answer(rollSchema, await rates.raw(rollPath(a)), "roll quotes");
-  if (body.status === "refused" || !body.terms || !body.wallet) {
-    const said = body.refusal ?? body.unsigned;
-    throw refused(said?.code, "The partner vaults fund no roll of this loan now");
+export async function rollFigures(
+  rates: Upstream, a: RollAsk & { oldPrincipal: bigint; oldCap: bigint },
+  sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+): Promise<{ terms: RollTerms; wallet: RollWallet }> {
+  for (let attempt = 1; ; attempt += 1) {
+    const body = answer(rollSchema, await rates.raw(rollPath(a)), "roll quotes");
+    if (body.status === "refused" || !body.terms || !body.wallet) {
+      const said = body.refusal ?? body.unsigned;
+      if (said?.code === "PRICING_EXPIRED" && attempt < 4) { await sleep(5_000); continue; }
+      throw refused(said?.code, "The partner vaults fund no roll of this loan now");
+    }
+    const terms = { principal: BigInt(body.terms.principal), cap: BigInt(body.terms.cap), term: body.terms.term };
+    const wallet = walletOf(body.wallet, terms, a.oldCap);
+    if (!wallet || terms.principal !== a.oldPrincipal || terms.term !== a.term) throw new ApiError("PLAN_MISMATCH", "The quoted roll is not this loan's; nothing was prepared", 409);
+    return { terms, wallet };
   }
-  const terms = { principal: BigInt(body.terms.principal), cap: BigInt(body.terms.cap), term: body.terms.term };
-  const wallet = walletOf(body.wallet, terms, a.oldCap);
-  if (!wallet || terms.principal !== a.oldPrincipal || terms.term !== a.term) throw new ApiError("PLAN_MISMATCH", "The quoted roll is not this loan's; nothing was prepared", 409);
-  return { terms, wallet };
 }
 
 /**

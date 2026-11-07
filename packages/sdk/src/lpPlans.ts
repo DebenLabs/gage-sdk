@@ -7,7 +7,7 @@
  * public (`actionsOn`).
  */
 import { encodeFunctionData, erc20Abi, getAddress, parseEventLogs, type Address, type Hex, type Log } from "viem";
-import { fablesHookAbi, fablesWrapperAbi, lpCoreAbi, lpVaultAbi, lpVaultFactoryAbi, positionManagerAbi } from "./abi.js";
+import { fablesHookAbi, fablesWrapperAbi, lpCoreAbi, lpVaultAbi, lpCompanionAbi, lpVaultFactoryAbi, positionManagerAbi } from "./abi.js";
 import type { FablesReceipts, LpLoan } from "./chain.js";
 import { ApiError, requireThat } from "./errors.js";
 import * as f from "./format.js";
@@ -17,7 +17,7 @@ import {
 } from "./lp.js";
 import { lpSharesText, lpShareUnit } from "./lpShares.js";
 import { lpPoolOf, type LpAdapter, type LpLane } from "./deployment.js";
-import type { Ctx, Plan, Row, Step, TokenRef, Tx } from "./plans.js";
+import { FREE_CASH_MARGIN_BPS, type Ctx, type Plan, type Row, type Step, type TokenRef, type Tx } from "./plans.js";
 import type { ActionInput } from "./schemas.js";
 
 /** An amount of a token, as a view lists one. */
@@ -39,6 +39,8 @@ export type LpView =
   | { action: "lp_deposit"; vault: Address; name: string; amount: string; minShares: string; shareDecimals: number; performanceFeeBps: number }
   | { action: "lp_redeem"; vault: Address; name: string; shares: string; shareDecimals: number; assets: string; minAssets: string; all: boolean }
   | { action: "lp_claim_bonus"; vault: Address; name: string; bonuses: { loanId: string; amount: string }[]; total: string }
+  /** A reserve vault's sGAGE (D454) claimed from its companion, `amount` raw sGAGE (18 decimals). */
+  | { action: "lp_claim_rewards"; vault: Address; name: string; companion: Address; amount: string }
   /**
    * A running loan rolled into a new one on the same position (D317): the old loan's principal and repayment (`owed`),
    * the new loan's, and what the wallet pays (`pay`) or receives now (`receive`, with what the core credited it before).
@@ -56,6 +58,8 @@ export type LpView =
   | { action: "lp_vault_add_pool"; vault: Address; name: string; adapter: Address; pool: Address; poolName: string; fundsFrom: number }
   | { action: "lp_vault_remove_pool"; vault: Address; name: string; adapter: Address; pool: Address; poolName: string };
 
+/** A loan an `lp_roll` closed (`LP_STATE`): its position secures the running loan, and nothing of it is left to act on. */
+const ROLLED = 5, ROLLED_WORDS = "This loan rolled into a new one on the same position: act on that loan";
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const tx = (to: Address, data: Hex): Tx => ({ to, data, value: 0n });
 const call = (label: string, to: Address, data: Hex, final = false): Step => ({ label, kind: "action", final, build: () => Promise.resolve(tx(to, data)) });
@@ -318,7 +322,7 @@ async function lpUnwrap(c: Ctx, i: Extract<ActionInput, { action: "lp_unwrap" }>
 async function lpRoll(c: Ctx, i: Extract<ActionInput, { action: "lp_roll" }>): Promise<Plan> {
   const lane = laneOf(c), wallet = i.wallet as Address, l = await ownLoan(c, lane, wallet, i.loanId);
   requireThat(l.state === 1, "NOT_RUNNING", "Only a running LP loan rolls");
-  requireThat(c.now() < l.end, "TERM_ENDED", "The term has ended: the position goes to the lenders");
+  requireThat((await c.chain.head()).timestamp < l.end, "TERM_ENDED", "The term has ended: the position goes to the lenders");
   const adapter = adapterOf(lane, l.adapter), vault = i.vault ? await vaultOf(c, lane, i.vault) : null;
   const reg = await c.chain.lpRegistry(lane.registry);
   requireThat(!reg.newLoansPaused, "LOANS_PAUSED", "New LP loans are paused");
@@ -386,10 +390,11 @@ async function lpRepay(c: Ctx, i: Extract<ActionInput, { action: "lp_repay" }>):
   const back = call(`Take back position #${ref.tokenId}`, lane.core, encodeFunctionData({ abi: lpCoreAbi, functionName: "returnPosition", args: [id] }));
   const steps: Step[] = [];
   if (l.state === 1) {
-    requireThat(c.now() < l.end, "TERM_ENDED", "The term has ended: the position goes to the lenders");
+    requireThat((await c.chain.head()).timestamp < l.end, "TERM_ENDED", "The term has ended: the position goes to the lenders");
     requireThat(await c.chain.balance(c.d.usdg, wallet) >= l.repayment, "INSUFFICIENT_BALANCE", `Repaying takes ${f.owed(l.repayment)}; the wallet holds less`);
     steps.push(...await usdgApproval(c, wallet, lane.core, l.repayment), call("Repay", lane.core, encodeFunctionData({ abi: lpCoreAbi, functionName: "repay", args: [id] })), back);
   } else {
+    requireThat(l.state !== ROLLED, "NOT_REPAYABLE", ROLLED_WORDS);
     requireThat(l.state === 2, "NOT_REPAYABLE", "The term ended unpaid: the position went to the lenders");
     if (!l.positionReturned) steps.push(back);
   }
@@ -412,6 +417,7 @@ async function lpRepay(c: Ctx, i: Extract<ActionInput, { action: "lp_repay" }>):
 async function lpReturnPosition(c: Ctx, i: Extract<ActionInput, { action: "lp_return_position" }>): Promise<Plan> {
   const lane = laneOf(c), wallet = i.wallet as Address, l = await ownLoan(c, lane, wallet, i.loanId);
   requireThat(l.state !== 1, "NOT_REPAID", "The loan is not repaid: lp_repay repays it before its end and takes the position back");
+  requireThat(l.state !== ROLLED, "NOT_REPAYABLE", ROLLED_WORDS);
   requireThat(l.state === 2, "NOT_REPAYABLE", "The term ended unpaid: the position went to the lenders");
   const ref = positionRef(lane, l.adapter, l.pool, l.tokenId);
   const rewards = (await c.chain.lpRewardTokens(l.adapter)).length > 0;
@@ -453,7 +459,7 @@ async function lpCollect(c: Ctx, i: Extract<ActionInput, { action: "lp_collect" 
     };
   }
   requireThat(l.state === 1, "NOT_RUNNING", "Only a running LP loan's fees are collected");
-  requireThat(c.now() < l.end, "TERM_ENDED", "The term has ended: the position's fees and rewards go to the lenders with it");
+  requireThat((await c.chain.head()).timestamp < l.end, "TERM_ENDED", "The term has ended: the position's fees and rewards go to the lenders with it");
   const owed = await c.chain.lpFeesOwed(lane.core, id, wallet);
   const due = owed !== null && (owed.amount0 > 0n || owed.amount1 > 0n), rewards = rewardTokens.length > 0;
   const refs = await tokenRefs(c, pair);
@@ -507,16 +513,20 @@ async function laneVault(c: Ctx, lane: LpLane, vault: string) {
  * A deposit into an LP vault (ERC-4626, D319: `deposit(assets, receiver, minShares)`, the shares minted to the wallet):
  * USDG approved for exactly the amount, then the deposit, its least shares what it buys now (`previewDeposit`) less
  * `maxSlippageBps` (50 when omitted). Refused while the vault is impaired (VAULT_IMPAIRED) or its deposits are closed
- * (DEPOSITS_CLOSED), as its `maxDeposit` is 0 then.
+ * (DEPOSITS_CLOSED), as its `maxDeposit` is 0 then. A reserve vault (D454) puts what no loan needs into its reserve, so
+ * its review says that, where an LPVault's says what it pays out from is its free cash alone.
  */
 async function lpDeposit(c: Ctx, i: Extract<ActionInput, { action: "lp_deposit" }>): Promise<Plan> {
   const lane = laneOf(c), wallet = i.wallet as Address, amount = BigInt(i.amount);
   const { v, st } = await laneVault(c, lane, i.vault);
   requireThat(!st.impaired, "VAULT_IMPAIRED", "The vault is impaired: a loan past its end is not settled yet, or tokens a defaulted position delivered wait to be sold. It takes no deposit now");
   requireThat(!st.depositsClosed, "DEPOSITS_CLOSED", "The vault's deposits are closed while value it wrote off may still come back");
-  // D318: a vault the registry no longer lets fund new loans would hold the deposit idle.
+  // D318: a vault the registry no longer lets fund new loans would hold the deposit idle; a reserve vault (D454) would not,
+  // but the registry's word still shuts its deposits.
   const [allowed] = await c.chain.lpVaultsAllowed(lane.registry, [v.address]);
-  requireThat(allowed === true, "VAULT_NOT_LENDING", "gage's registry no longer lets this vault fund new loans: a deposit would sit idle. Its open loans run to their ends");
+  requireThat(allowed === true, "VAULT_NOT_LENDING", st.reserve
+    ? "gage's registry no longer lets this vault fund new loans, so it takes no deposit. Its open loans run to their ends"
+    : "gage's registry no longer lets this vault fund new loans: a deposit would sit idle. Its open loans run to their ends");
   requireThat(await c.chain.balance(c.d.usdg, wallet) >= amount, "INSUFFICIENT_BALANCE", `The wallet holds less than ${f.usdg(amount)}`);
   const minShares = slip(await c.chain.lpPreviewDeposit(v.address, amount), i.maxSlippageBps);
   requireThat(minShares > 0n, "ZERO_SHARES", "Too small to buy a share");
@@ -527,7 +537,8 @@ async function lpDeposit(c: Ctx, i: Extract<ActionInput, { action: "lp_deposit" 
       { label: "You deposit", value: f.usdg(amount) },
       { label: "You receive at least", value: lpSharesText(minShares, decimals) },
       { label: "Performance fee", value: `${f.bps(st.performanceFeeBps)} of what the vault's loans return` },
-      { label: "Taking it out", value: "Any time the vault is not impaired, up to its free cash" },
+      { label: "Taking it out", value: st.reserve ? "Any time the vault is not impaired, up to what its cash and its reserve can pay" : "Any time the vault is not impaired, up to its free cash" },
+      ...(st.reserve ? [{ label: "While it waits for a loan", value: "Cash past its curator's buffer goes into its reserve, an outside ERC-4626 whose return moves and which carries its own risk; loans and withdrawals draw on it. Holders also share sGAGE from its loans, claimed with lp_claim_rewards" }] : []),
       { label: "What it lends against", value: `${mandateWords(lane, st.mandate, c.now())} At a fixed cost and with no liquidation: a loan is never closed early because a price moves, and one not repaid by its end is settled by unwinding its position for the vault` },
     ] },
     steps: [
@@ -539,11 +550,29 @@ async function lpDeposit(c: Ctx, i: Extract<ActionInput, { action: "lp_deposit" 
 }
 
 /**
+ * What a reserve vault pays a redemption of `asked` shares now (D454), up to its `maxRedeem`, which follows its cash and
+ * what its reserve can pay, where an LPVault stops at its free cash. `maxRedeem` answers 0 while the reserve cannot be read,
+ * and its previews revert then, so none is asked past it. Shares `named` past it are refused (INSUFFICIENT_LIQUIDITY).
+ * Everything is cut to a basis point under it: a share's value grows while the transaction is on its way, and when the
+ * vault's liquidity is what limits the holding, the most it pays at this block is more than it pays at the next.
+ */
+async function reserveRedemption(c: Ctx, vault: Address, wallet: Address, asked: bigint, named: boolean): Promise<{ shares: bigint; assets: bigint }> {
+  const most = await c.chain.lpMaxRedeem(vault, wallet);
+  if (asked <= most) return { shares: asked, assets: await c.chain.lpPreviewRedeem(vault, asked) };
+  requireThat(most > 0n, "INSUFFICIENT_LIQUIDITY", "The vault can pay nothing now, while its cash and reserve are short or its reserve cannot be read; try again later", 409, { availableNow: "0" });
+  const shares = named ? most : most - most / 10_000n, assets = await c.chain.lpPreviewRedeem(vault, shares);
+  requireThat(!named, "INSUFFICIENT_LIQUIDITY", `The vault can pay ${f.usdg(assets)} now; redeem fewer shares`, 409, { availableNow: assets.toString() });
+  return { shares, assets };
+}
+
+/**
  * A withdrawal from an LP vault (ERC-4626, D319: `redeem(shares, receiver, owner, minAssets)`, the wallet's own shares
- * paid to it), paid from its free cash: the shares named, or every share the wallet holds (`balanceOf`, those it received
- * by transfer included) when omitted, cut to what the free cash pays now (`maxRedeem`); its least amount what they redeem
- * for now (`previewRedeem`) less `maxSlippageBps`. Refused while the vault is impaired (VAULT_IMPAIRED), for more shares
- * than the wallet holds (EXCEEDS_BALANCE), and for named shares the free cash cannot pay (INSUFFICIENT_LIQUIDITY).
+ * paid to it), paid from its free cash, and a reserve vault's reserve (D454, `reserveRedemption`): the shares named, or
+ * every share the wallet holds (`balanceOf`, those it received by transfer included) when omitted, cut to what the vault
+ * pays now (`maxRedeem`), less a basis point of it while a loan runs (a reserve vault's while that is what limits it); its
+ * least amount what they redeem for now (`previewRedeem`) less `maxSlippageBps`. Refused while the vault is impaired
+ * (VAULT_IMPAIRED), for more shares than the wallet holds (EXCEEDS_BALANCE), and for named shares the vault cannot pay
+ * (INSUFFICIENT_LIQUIDITY).
  */
 async function lpRedeem(c: Ctx, i: Extract<ActionInput, { action: "lp_redeem" }>): Promise<Plan> {
   const lane = laneOf(c), wallet = i.wallet as Address;
@@ -553,12 +582,18 @@ async function lpRedeem(c: Ctx, i: Extract<ActionInput, { action: "lp_redeem" }>
   const asked = i.shares ? BigInt(i.shares) : held;
   requireThat(asked <= held, "EXCEEDS_BALANCE", "More shares than the wallet holds");
   requireThat(!st.impaired, "VAULT_IMPAIRED", "The vault is impaired: a loan past its end is not settled yet, or tokens a defaulted position delivered wait to be sold. It pays nothing out now");
-  let shares = asked, assets = await c.chain.lpPreviewRedeem(v.address, shares);
-  if (assets > st.freeCash) {
+  let { shares, assets } = st.reserve ? await reserveRedemption(c, v.address, wallet, asked, Boolean(i.shares)) : { shares: asked, assets: await c.chain.lpPreviewRedeem(v.address, asked) };
+  // While a loan runs (free cash short of what the vault holds), the share's value grows by the second and the free cash
+  // does not: a redemption sized to the free cash's last unit reverts once the share has grown (InsufficientLiquidity).
+  // Everything is held a basis point under it, as earn_redeem holds a partner vault's (FREE_CASH_MARGIN_BPS): a vault lent
+  // out whole at the core's highest cost (50% a year) takes about an hour and three quarters to outgrow it. A reserve
+  // vault's limit is `reserveRedemption`'s, which holds its own margin.
+  const short = st.totalAssets !== null && st.freeCash < st.totalAssets, margin = (x: bigint) => (short ? x - (x * FREE_CASH_MARGIN_BPS) / 10_000n : x);
+  if (!st.reserve && assets > (i.shares ? st.freeCash : margin(st.freeCash))) {
     requireThat(!i.shares, "INSUFFICIENT_LIQUIDITY", `The vault can pay ${f.usdg(st.freeCash)} now; redeem fewer shares`, 409, { availableNow: st.freeCash.toString() });
     // Everything the free cash pays: ERC-4626's `maxRedeem`, the holding up to the most shares whose redemption, at the
-    // vault's own price (its virtual shares and asset included), the free cash covers.
-    shares = await c.chain.lpMaxRedeem(v.address, wallet);
+    // vault's own price (its virtual shares and asset included), the free cash covers; less the basis point.
+    shares = margin(await c.chain.lpMaxRedeem(v.address, wallet));
     assets = shares > 0n ? await c.chain.lpPreviewRedeem(v.address, shares) : 0n;
     requireThat(shares > 0n && assets <= st.freeCash, "INSUFFICIENT_LIQUIDITY", `The vault can pay ${f.usdg(st.freeCash)} now`, 409, { availableNow: st.freeCash.toString() });
   }
@@ -569,11 +604,11 @@ async function lpRedeem(c: Ctx, i: Extract<ActionInput, { action: "lp_redeem" }>
   return {
     view: { action: "lp_redeem", vault: v.address, name: v.name, shares: shares.toString(), shareDecimals: decimals, assets: assets.toString(), minAssets: minAssets.toString(), all },
     summary: { title: `Withdraw ${f.usdg(assets)} from ${name}`, rows: [
-      { label: "You redeem", value: all ? `${text} (all)` : shares < asked ? `${text} (all the vault's free cash pays now)` : text },
+      { label: "You redeem", value: all ? `${text} (all)` : shares < asked ? `${text} (${st.reserve ? "all the vault can pay now" : "all the vault's free cash pays now"})` : text },
       { label: "You receive at least", value: f.usdg(minAssets) },
     ] },
     steps: [call("Withdraw", v.address, encodeFunctionData({ abi: lpVaultAbi, functionName: "redeem", args: [shares, wallet, wallet, minAssets] }), true)],
-    notes: shares < asked ? ["The rest stays in the vault until it has the free cash to pay it."] : [],
+    notes: shares < asked ? [st.reserve ? "The rest stays in the vault until its cash and reserve can pay it." : "The rest stays in the vault until it has the free cash to pay it."] : [],
   };
 }
 
@@ -602,6 +637,29 @@ async function lpClaimBonus(c: Ctx, i: Extract<ActionInput, { action: "lp_claim_
       ...(claims.length ? ["A bonus is what a defaulted loan's sale brought above its book value, shared by the lenders by their share of the vault and the time they held it while the loan ran."] : []),
       ...(ready.length > claims.length ? ["More bonuses are ready: claim again once these have gone through."] : []),
     ],
+  };
+}
+
+/**
+ * Claiming a holder's sGAGE from a reserve vault (D454, `LPVaultCompanion.claimRewards`): what its loans earned the vault's
+ * holders, outside the share price, paid to the caller, shares held or not. Refused on an LPVault, which has no companion
+ * and pays no sGAGE (NOT_RESERVE_VAULT), and with nothing to claim (NOTHING_TO_CLAIM). It moves no USDG.
+ */
+async function lpClaimRewards(c: Ctx, i: Extract<ActionInput, { action: "lp_claim_rewards" }>): Promise<Plan> {
+  const lane = laneOf(c), wallet = i.wallet as Address, v = await vaultOf(c, lane, i.vault);
+  const companion = await c.chain.lpCompanion(v.address);
+  requireThat(companion, "NOT_RESERVE_VAULT", "This LP vault has no reserve and pays no sGAGE");
+  const amount = await c.chain.lpRewardClaimable(companion, wallet);
+  requireThat(amount > 0n, "NOTHING_TO_CLAIM", "This wallet has no sGAGE to claim from this LP vault");
+  const text = f.money(amount, { symbol: "sGAGE", decimals: 18, stable: false });
+  return {
+    view: { action: "lp_claim_rewards", vault: v.address, name: v.name, companion, amount: amount.toString() },
+    summary: {
+      title: `Claim ${text} from ${v.name} (${f.short(v.address)})`,
+      rows: [{ label: "You receive", value: text }, { label: "Your shares", value: "They stay as they are, and keep their share of what comes next" }],
+    },
+    steps: [call(`Claim ${text}`, companion, encodeFunctionData({ abi: lpCompanionAbi, functionName: "claimRewards" }), true)],
+    notes: ["This is what the vault's loans earned its holders in sGAGE, outside the share price and with no fee: each holder's by its share of the vault while it arrived."],
   };
 }
 
@@ -719,6 +777,7 @@ export function lpPlan(c: Ctx, input: Extract<ActionInput, { action: `lp_${strin
     case "lp_deposit": return lpDeposit(c, input);
     case "lp_redeem": return lpRedeem(c, input);
     case "lp_claim_bonus": return lpClaimBonus(c, input);
+    case "lp_claim_rewards": return lpClaimRewards(c, input);
     case "lp_roll": return lpRoll(c, input);
     case "lp_wrap": return lpWrap(c, input);
     case "lp_unwrap": return lpUnwrap(c, input);

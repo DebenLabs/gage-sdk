@@ -105,8 +105,20 @@ describe("vault names", () => {
     expect(vaultName({ ...vault, name: "Tech stocks" }, d)).toBe("Tech stocks");
     expect(vaultName(vault, d)).toBe("RWA · NVDAx");
     expect(vaultName({ ...vault, assets: [NVDA, USDG], categoryMask: 2 }, d)).toBe("RH ECO vault");
-    // Display text only: no line break, control or invisible character survives, and an empty name is no name.
-    expect(vaultName({ ...vault, name: "  Gold\n\tvault\u200b " }, d)).toBe("Gold vault");
+    // The app's rule: a name that hides text is no name, and is never cleaned into another vault's.
+    expect(vaultName({ ...vault, name: "  Gold\n\tvault\u200b " }, d)).toBe("RWA · NVDAx");
+    expect(vaultName({ ...vault, name: "SIL\u200bICON" }, d)).toBe("RWA · NVDAx");
+    expect(vaultName({ ...vault, name: "gage\u2060" }, d)).toBe("RWA · NVDAx");
+    expect(vaultName({ ...vault, name: "SILICON\u202e" }, d)).toBe("RWA · NVDAx");
+    // What draws nothing hides text too: the fillers, a blank braille cell, a joiner; an emoji's presentation mark does not.
+    for (const blank of ["\u3164", "\u115f", "\uffa0", "\u2800", "\u034f", "\u17b4", "\u180b", "\ufe00"])
+      expect(vaultName({ ...vault, name: `SILICON${blank}` }, d)).toBe("RWA · NVDAx");
+    expect(vaultName({ ...vault, name: "\u26a0\ufe0f Risky" }, d)).toBe("\u26a0\ufe0f Risky");
+    expect(vaultName({ ...vault, name: "  Gold   vault " }, d)).toBe("Gold vault");
+    // A name that claims a standing shows the vault's short address, as gage.cash shows it to a manager no badge names.
+    for (const claim of ["Gage Official", "Official Stocks", "Team \u00b7 Ramses", "OG \u00b7 SILICON", "Verified by gage", "Audited by OpenZeppelin", "G\u0430ge"])
+      expect(vaultName({ ...vault, name: claim }, d)).toBe(`Vault ${VAULT.slice(0, 6)}\u2026${VAULT.slice(-4)}`);
+    expect(vaultName({ ...vault, name: "Engagement" }, d)).toBe("Engagement");
     expect(vaultName({ ...vault, name: "\u200b \n" }, d)).toBe("RWA · NVDAx");
     expect(vaultName({ ...vault, name: "é".repeat(60) }, d)).toBe("é".repeat(48));
   });

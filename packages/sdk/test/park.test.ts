@@ -49,9 +49,10 @@ function chainWith(rows: Record<string, DexPosition>, v4: Record<string, V4Posit
 
 const row = (address: Address, core: Address) => ({ address, creator: A(1), curator: A(1), core, categoryMask: 1, feeBps: 1000, maxLoanTerm: 1_814_400, assets: [NVDA], fundingEnabled: true });
 /** gage's index: the USDG vault and GLDx's, a deposit's preview (or its refusal), an accounting, and the wallet's v4 position 77. */
-function index(over: { refusal?: string | null; due?: boolean } = {}) {
+function index(over: { refusal?: string | null; due?: boolean; mandateVersion?: number } = {}) {
+  const version = over.mandateVersion === undefined ? {} : { mandateVersion: over.mandateVersion };
   return fakeUpstream({
-    "/intent/partners/vaults?": { items: [row(VAULT, CORE), row(GLD_VAULT, GLD_CORE)], nextCursor: null },
+    "/intent/partners/vaults?": { items: [{ ...row(VAULT, CORE), ...version }, { ...row(GLD_VAULT, GLD_CORE), ...version }], nextCursor: null },
     "/intent/partners/vaults/": (path: string) => {
       if (path.includes("/accounting")) return { status: 200, body: { pricing: { totalAssets: "1", totalSupply: "1", assetsPerShare: "1" }, liquidity: { free: "1" }, settlement: { due: over.due ?? false, settleable: ["3"] } } };
       if (path.includes("/position/")) return { status: 200, body: { shares: "1000000000000000000", value: "1000000", withdrawableNow: "1000000", rewards: "0", pockets: [] } };
@@ -341,5 +342,55 @@ describe("sending a park", () => {
     const caps = await gage.capabilities();
     expect(caps.parkPools).toHaveLength(4);
     expect(caps.actions).toContain("unpark");
+  });
+});
+
+/**
+ * A partner vault's deposit, withdrawal or settle claims for each open reward record or loan it books, which an estimate
+ * taken in the second of another checkpoint misses (src/gas.ts). A caller sending a batch's calls one by one has no other
+ * way to learn that floor. A mainnet fork, 6 November 2026: an unpark's withdrawal sent with its estimate alone, 686,426,
+ * ran out of gas; the same withdrawal took 946,605.
+ */
+describe("a batch's calls say what each adds to its estimate", () => {
+  const floor = (records: bigint) => 250_000n * (records + 2n);
+  const FULL_BOOK = floor(64n);
+  const six = { storageAt: () => Promise.resolve(6n) };
+  const held = chainWith({ [`${UNI_NFPM}:5`]: dex(BELOW_PRICE) }, {}, six);
+  const unparking = { action: "unpark" as const, wallet: WALLET, vault: VAULT, manager: UNI_NFPM, pool: UNI_POOL, ...BELOW_PRICE };
+  const paying = { vaultMaxWithdraw: () => Promise.resolve(5_000_000_000n) };
+  const counted = (over: Parameters<typeof index>[0] = {}) => index({ mandateVersion: 12, ...over });
+
+  it("a park's deposit its vault's floor, the DEX's calls and the approval nothing", async () => {
+    const b = await parkBatch(ctx({ d: d(), chain: held, indexer: counted() }), parking());
+    expect(b.calls.map((x) => [x.label, x.extraGas])).toEqual([["Pull position #5 out", 0n], ["Collect position #5", 0n], ["Approve USDG", 0n], ["Deposit", floor(6n)]]);
+  });
+
+  it("an unpark's withdrawal its vault's floor, the approval and the mint nothing", async () => {
+    const b = await parkBatch(ctx({ d: d(), chain: fakeChain({ ...paying, ...six }), indexer: counted() }), unparking);
+    expect(b.calls.map((x) => x.extraGas)).toEqual([floor(6n), 0n, 0n]);
+    expect(b.calls[0]!.data.slice(0, 10)).toBe("0xb460af94");
+  });
+
+  it("an earlier generation's redemption too", async () => {
+    const b = await parkBatch(ctx({ d: d(), chain: fakeChain(six), indexer: counted() }), unparking);
+    expect(b.calls[0]!.label).toBe("Withdraw");
+    expect(b.calls.map((x) => x.extraGas)).toEqual([floor(6n), 0n, 0n]);
+  });
+
+  it("a settlement that comes first, for each loan it books", async () => {
+    const b = await parkBatch(ctx({ d: d(), chain: held, indexer: counted({ refusal: "SETTLEMENT_DUE" }) }), parking());
+    expect(b.again).toBe(true);
+    expect(b.calls.map((x) => [x.label, x.extraGas])).toEqual([["Settle the vault's loans", floor(1n)]]);
+  });
+
+  it("a full book's when the count cannot be read", async () => {
+    const b = await parkBatch(ctx({ d: d(), chain: held, indexer: index() }), parking());
+    expect(b.calls[3]!.extraGas).toBe(FULL_BOOK);
+  });
+
+  it("prepare's calls the same, as strings, beside the transaction a wallet takes", async () => {
+    const p = await prepareNext(ctx({ d: d(), chain: held, indexer: counted() }), parking());
+    expect(p.calls?.map((x) => x.extraGas)).toEqual(["0", "0", "0", String(floor(6n))]);
+    expect(Object.keys(p.calls![3]!.transaction).sort()).toEqual(["chainId", "data", "from", "to", "value"]);
   });
 });

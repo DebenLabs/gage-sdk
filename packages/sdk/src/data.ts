@@ -5,8 +5,9 @@
 import { z } from "zod";
 import type { Address } from "viem";
 import type { Loan } from "./chain.js";
-import { generationOfCore, privateRoutersOf, type Deployment, type Generation } from "./deployment.js";
+import { generationOfCore, privateRoutersOf, publicRoutersOf, type Deployment, type Engine, type Generation } from "./deployment.js";
 import { ApiError } from "./errors.js";
+import { nameClaims, plainName, short } from "./format.js";
 import type { Ctx } from "./plans.js";
 import { createUpstream, type Upstream } from "./upstream.js";
 
@@ -62,6 +63,26 @@ export async function publicOnChain(c: Pick<Ctx, "d" | "chain">, loans: readonly
   return shown;
 }
 
+/** gage's index gave no answer that can be read, as against answering that it has no such record. */
+const SILENT: ReadonlySet<string> = new Set(["RATE_LIMITED", "UPSTREAM_INVALID", "UPSTREAM_TOO_LARGE", "UPSTREAM_UNAVAILABLE"]);
+export const indexSilent = (error: unknown) => error instanceof ApiError && SILENT.has(error.code);
+
+/**
+ * What the chain alone proves of loan `id` on `engine`, for when gage's index is silent (D439). A core lists for a router
+ * only one its registry admitted (`isRouter`), and every admission logs `RouterSet`, so those logs name every router that
+ * could have opened it. Null where one is a router this release does not name, which could be a private lane it does not
+ * know: nothing is proved. Otherwise whether it is public: false where a private router opened it or cannot say.
+ *
+ * Read from block 0, as a release's `startBlock` may come after a registry's first logs.
+ */
+export async function provenPublic(c: Pick<Ctx, "d" | "chain">, engine: Engine, id: bigint): Promise<boolean | null> {
+  const head = (await c.chain.head()).number;
+  const named = new Set([...privateRoutersOf(c.d, engine.engine), ...publicRoutersOf(c.d, engine.engine)].map((r) => r.toLowerCase()));
+  const admitted = await c.chain.routerAdmissions(engine.registry, 0n, head);
+  if (admitted.some((r) => !named.has(r.toLowerCase()))) return null;
+  return (await publicOnChain(c, [{ engine: engine.engine, id }]))[0]!;
+}
+
 export const STATE = ["NONE", "FUNDING", "ACTIVE", "REPAID", "DEFAULTED", "CANCELLED"] as const;
 export const stateName = (s: number) => STATE[s] ?? "UNKNOWN";
 
@@ -70,6 +91,21 @@ export async function loanRecord(c: Pick<Ctx, "d" | "chain" | "indexer" | "index
   const p = await loanIndexer(c, engine).get(`/v2/positions/${engine.toLowerCase()}/${id}`, position);
   if (!isPublic(p) || !(await publicOnChain(c, [{ engine, id: BigInt(id) }]))[0]) throw new ApiError("NOT_FOUND", "gage has no record of that", 404);
   return p;
+}
+
+/**
+ * A loan a wallet may repay: as `loanRecord`, or with gage's index silent, once the chain proves it public (D439). An index
+ * that answers still decides. Where the chain proves nothing the index's own refusal stands, to be asked again.
+ */
+export async function loanProven(c: Pick<Ctx, "d" | "chain" | "indexer" | "indexerAt">, engine: Engine, id: string): Promise<void> {
+  try {
+    await loanRecord(c, engine.engine, id);
+  } catch (error) {
+    if (!indexSilent(error)) throw error;
+    const proven = await provenPublic(c, engine, BigInt(id));
+    if (proven === null) throw error;
+    if (!proven) throw new ApiError("NOT_FOUND", "gage has no record of that", 404);
+  }
 }
 
 /** Rows a page of loans asks for, and the most one is read for. */
@@ -141,27 +177,59 @@ const vault = z.object({
    * leave free ("Cash kept free", D335), and `paused`, while none of its loans sells (Intent D57's exit now waits for
    * it). One the index omits or answers malformed is unknown. */
   settings: z.object({ bufferBps: z.number().int().min(0).max(10_000), paused: z.boolean().optional().catch(undefined) }).loose().optional().catch(undefined),
+  /** From mandate version 13 (Intent D56, D452): a vault created to buy running loans alone, which funds no new one, for
+   * good. The index answers it only on such a vault; absent, or answered malformed, is a vault that funds. */
+  buysOnly: z.boolean().optional().catch(undefined),
 }).loose();
 export type PartnerVault = z.output<typeof vault>;
+/** Whether a vault funds new loans now: funding on, and not one that buys running loans alone (D452). */
+export const fundsLoans = (v: Pick<PartnerVault, "fundingEnabled" | "buysOnly">): boolean => v.fundingEnabled && v.buysOnly !== true;
 /** Rows a page of partner vaults asks for, and the most one is read for. */
 const VAULT_PAGE = 50;
+/** The most pages a list reads: 1,000 vaults. */
+const VAULT_PAGES = 20;
 const vaultPage = z.object({ items: z.array(vault), nextCursor: z.string().nullable() }).loose();
 
 /**
- * Every partner vault of a generation's factory, on its core only: the USDG generation's by default. A lend-asset
- * generation's are asked by its factory (`factory=`, docs/api.md "Lend-asset generations"); USDG's name none, as before.
+ * A generation's partner vaults, on its core only, in address order, up to the most a list reads; `cut` where there were
+ * more. A lend-asset generation's are asked by its factory (`factory=`, docs/api.md "Lend-asset generations"); USDG's name
+ * none, as before.
  */
-export async function partnerVaults(indexer: Upstream, d: Deployment, g: Generation = d.generations[0]!): Promise<PartnerVault[]> {
-  const out: PartnerVault[] = [];
+async function partnerVaultList(indexer: Upstream, g: Generation): Promise<{ vaults: PartnerVault[]; cut: boolean }> {
+  const vaults: PartnerVault[] = [];
   const factory = g.primary ? "" : `&factory=${g.factory.toLowerCase()}`;
   let cursor: string | null = null;
-  for (let n = 0; n < 20; n += 1) {
+  for (let n = 0; n < VAULT_PAGES; n += 1) {
     const page: z.output<typeof vaultPage> = await indexer.get(`/intent/partners/vaults?limit=${VAULT_PAGE}${factory}${cursor ? `&cursor=${cursor}` : ""}`, vaultPage);
-    out.push(...page.items.slice(0, VAULT_PAGE).filter((v) => v.core.toLowerCase() === g.core.engine.toLowerCase()));
+    vaults.push(...page.items.slice(0, VAULT_PAGE).filter((v) => v.core.toLowerCase() === g.core.engine.toLowerCase()));
     cursor = page.nextCursor;
     if (!cursor) break;
   }
-  return out;
+  return { vaults, cut: cursor !== null };
+}
+
+/** What a list says of a factory it stopped reading (`partnerVaultList`). */
+const listCut = (g: Generation) => `the ${g.id} vaults of factory ${g.factory} past the first ${VAULT_PAGE * VAULT_PAGES}: name a vault by its address instead`;
+
+/** A generation's partner vaults, up to the most a list reads: the USDG generation's by default. */
+export async function partnerVaults(indexer: Upstream, d: Deployment, g: Generation = d.generations[0]!): Promise<PartnerVault[]> {
+  return (await partnerVaultList(indexer, g)).vaults;
+}
+
+/**
+ * One partner vault by its address, as the generation's index serves it, of that generation's core; undefined for none.
+ * An index that cannot answer for one vault is asked for its list.
+ */
+export async function partnerOnIndex(indexer: Upstream, d: Deployment, g: Generation, address: string): Promise<PartnerVault | undefined> {
+  const key = address.toLowerCase();
+  try {
+    const answer = await indexer.raw(`/intent/partners/vaults/${key}`);
+    const one = answer.status === 200 ? vault.safeParse(answer.body) : null;
+    if (one?.success && one.data.address.toLowerCase() === key) return one.data.core.toLowerCase() === g.core.engine.toLowerCase() ? one.data : undefined;
+  } catch {
+    // The list below says what it can, or why it cannot.
+  }
+  return (await partnerVaults(indexer, d, g)).find((v) => v.address.toLowerCase() === key);
 }
 
 const generationIndexes = new Map<string, Upstream>();
@@ -170,6 +238,11 @@ const generationIndexes = new Map<string, Upstream>();
  * retention"), a current one's the release names for it (`Generation.indexerUrl`), else the network's.
  */
 export function indexerOf(c: Pick<Ctx, "indexer" | "indexerAt">, g: Generation): Upstream {
+  if (g.retired?.unindexed) {
+    // Never the network's, whose answer for a factory it does not keep reads as an empty list.
+    const refuse = () => Promise.reject(new ApiError("UPSTREAM_UNAVAILABLE", `This copy of the manifest names no index for this ${g.id} generation`, 503, false));
+    return { raw: refuse, get: refuse };
+  }
   const url = g.retired?.indexerUrl ?? g.indexerUrl;
   if (!url) return c.indexer;
   if (c.indexerAt) return c.indexerAt(url);
@@ -189,9 +262,14 @@ function loanIndexer(c: Pick<Ctx, "d" | "indexer" | "indexerAt">, engine: string
 
 /** Every vault of every public generation, each with its generation, USDG's first (D251); with `retired`, the kept ones' too. */
 export async function allPartnerVaults(c: Pick<Ctx, "indexer" | "indexerAt" | "d">, retired = false): Promise<{ v: PartnerVault; g: Generation }[]> {
+  return (await listedPartnerVaults(c, retired)).vaults;
+}
+
+/** As `allPartnerVaults`, saying which factories' lists stopped at the most a list reads. */
+export async function listedPartnerVaults(c: Pick<Ctx, "indexer" | "indexerAt" | "d">, retired = false): Promise<{ vaults: { v: PartnerVault; g: Generation }[]; cut: string[] }> {
   const gens = retired ? [...c.d.generations, ...c.d.retired] : c.d.generations;
-  const lists = await Promise.all(gens.map(async (g) => (await partnerVaults(indexerOf(c, g), c.d, g)).map((v) => ({ v, g }))));
-  return lists.flat();
+  const lists = await Promise.all(gens.map(async (g) => ({ g, ...(await partnerVaultList(indexerOf(c, g), g)) })));
+  return { vaults: lists.flatMap(({ g, vaults }) => vaults.map((v) => ({ v, g }))), cut: lists.filter((l) => l.cut).map((l) => listCut(l.g)) };
 }
 
 /**
@@ -209,11 +287,17 @@ export async function eachRead<T, R>(items: readonly T[], read: (x: T) => Promis
   return { read: out, unread };
 }
 
+/** What a list says while gage's index has not named the lend markets found since the release (src/discovery.ts). */
+export const FOUND_UNREAD = "the lend markets found since this release: gage's index has not named them just now, so their loans and holdings may be missing here";
+
 /** As `allPartnerVaults` with `retired`, each generation's list read on its own: one whose index does not answer is unread (D412). */
-export async function everyPartnerVault(c: Pick<Ctx, "indexer" | "indexerAt" | "d">): Promise<{ vaults: { v: PartnerVault; g: Generation }[]; unread: string[] }> {
-  const { read, unread } = await eachRead([...c.d.generations, ...c.d.retired], (g) => partnerVaults(indexerOf(c, g), c.d, g),
+export async function everyPartnerVault(c: Pick<Ctx, "indexer" | "indexerAt" | "d" | "generationsUnread">): Promise<{ vaults: { v: PartnerVault; g: Generation }[]; unread: string[] }> {
+  const { read, unread } = await eachRead([...c.d.generations, ...c.d.retired], (g) => partnerVaultList(indexerOf(c, g), g),
     (g) => `the ${g.id} vaults of factory ${g.factory}`);
-  return { vaults: read.flatMap(({ x: g, r }) => r.map((v) => ({ v, g }))), unread };
+  return {
+    vaults: read.flatMap(({ x: g, r }) => r.vaults.map((v) => ({ v, g }))),
+    unread: [...unread, ...read.filter(({ r }) => r.cut).map(({ x: g }) => listCut(g)), ...(c.generationsUnread ? [FOUND_UNREAD] : [])],
+  };
 }
 
 const linkTable = z.object({ links: z.array(z.object({ link: z.string(), vault: z.string() }).loose()) }).loose();
@@ -352,15 +436,16 @@ export const previewAnswer = z.object({
 const NAME_CHARS = 48;
 
 /**
- * A vault's name. From mandate version 12 (Intent D54) the one its manager gave it, on chain, as plain text: one line,
- * without control or invisible format characters, at most 48 characters. A vault without one (earlier versions, or a
- * name that is empty once cleaned) is named as the Earn page names it (web/src/intent/partners/copy.ts): its family from
+ * A vault's name. From mandate version 12 (Intent D54) the one its manager gave it, on chain: one line, at most 48
+ * characters. A vault without one (earlier versions, an empty name, or one that hides text, never cleaned into another
+ * vault's) is named as the Earn page names it (web/src/intent/partners/copy.ts): its family from
  * the categories it lends against (RWA: stocks and commodities, RH ECO: meme and utility coins), and its token when it
  * lends against one only.
  */
-export function vaultName(v: Pick<PartnerVault, "categoryMask" | "assets" | "name">, d: Deployment): string {
-  const own = Array.from((v.name ?? "").replace(/\p{Cf}/gu, "").replace(/[\p{Cc}\s]+/gu, " ").trim()).slice(0, NAME_CHARS).join("").trim();
-  if (own) return own;
+export function vaultName(v: Pick<PartnerVault, "address" | "categoryMask" | "assets" | "name">, d: Deployment): string {
+  const own = plainName(v.name ?? "", NAME_CHARS);
+  // A name that claims what only gage or a badge could say leaves the vault its short address.
+  if (own) return nameClaims(own) ? `Vault ${short(v.address)}` : own;
   const family = v.categoryMask & (1 | 8) ? "RWA" : v.categoryMask & (2 | 4) ? "RH ECO" : "Partner";
   const named = (a: { token: string }) => a.token.toLowerCase() === v.assets[0]!.toLowerCase();
   // A lend-asset generation's collateral may be outside the release's asset list (D249): it names its own.

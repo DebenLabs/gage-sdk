@@ -1,14 +1,15 @@
 # gage-sdk guides
 
-Every way gage supports an integration, each with an example that runs (`../examples/`, tested against gage's own fakes
-in `../test/examples.test.ts`). Start with Getting started; the rest can be read in any order.
+Every way gage supports an integration, each with an example that runs (`../examples/`, which ships with the package,
+tested against gage's own fakes in `../test/examples.test.ts`). The code blocks here are slices of those examples, which
+define `gage`, `signer` and the inputs. Start with Getting started; the rest can be read in any order.
 
 | Guide | For |
 |---|---|
 | [Getting started](getting-started.md) | install, networks, reading without a key, signing with your own |
 | [Reads](reads.md) | markets, fixed costs, loans, a wallet's portfolio, a vault's free cash |
 | [Borrowing](borrowing.md) | the lowest fixed cost in one click, exact terms and Loan grades, 1-day loans, waiting for funding, repay, roll over, roll by itself, cash out, leverage |
-| [Earn](earn.md) | partner vaults: deposits, withdrawals, exit now, collecting; a rehypo pool's exit now; a DEX's pool vaults |
+| [Earn](earn.md) | partner vaults: deposits, withdrawals, exit now, collecting, leaving with gage's index off; your own vault, created and managed; a rehypo pool's exit now; a DEX's pool vaults |
 | [Puts](puts.md) | puts on a lend asset's generation (a loan of the asset against USDG) |
 | [LP lane](lp-lane.md) | loans against liquidity positions, LP vaults, Fables receipts, curators |
 | [Lend generations](lend-generations.md) | the assets gage lends besides USDG, stablecoin markets found through the GenerationDeployer |

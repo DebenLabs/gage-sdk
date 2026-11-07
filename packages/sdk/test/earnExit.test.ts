@@ -519,3 +519,28 @@ function accountingWithout() {
       : { shares: String(HELD), value: "3000000000", withdrawableNow: "2250000000", rewards: "0", pockets: [] },
   });
 }
+
+describe("an exit with gage's index silent", () => {
+  const silent = () => fakeUpstream({ "/intent/partners/vaults": () => ({ status: 503, body: {} }) });
+  const manager = (paused = false) => () => Promise.resolve({ name: "Acme", categoryMask: 1, mandateVersion: 13, bufferBps: 500, paused });
+
+  it("plans it from the chain, the vault naming itself, and what it gives up left unknown, never a guess", async () => {
+    const p = await prepareNext(ctx({ d: d(), chain: approved({ vaultManager: manager() }), indexer: silent() }), now());
+    expect(p.status).toBe("ready");
+    expect(desk(p.next!.transaction.data).args).toEqual([getAddress(VAULT), HELD, 7n]);
+    expect(p.view).toMatchObject({ action: "earn_exit_now", name: "Acme", loanId: "7" });
+    expect(p.preview?.giveUp).toBeNull();
+    // Its next listing and its cancel read nothing else.
+    const open = { exitOf: exit({ shares: HELD, id: 5n, nonce: 1n, committedAt: NOW - 3600 }), exitShortfall: () => Promise.resolve(usd(750)), vaultManager: manager() };
+    expect((await prepareNext(ctx({ d: d(), chain: approved(open), indexer: silent() }), { action: "earn_exit_cancel", wallet: WALLET, vault: VAULT })).next).toMatchObject({ label: "Cancel the exit" });
+  });
+
+  it("refuses while the vault itself says it is paused", async () => {
+    expect(await refusal(prepareNext(ctx({ d: d(), chain: approved({ vaultManager: manager(true) }), indexer: silent() }), now()))).toEqual({ code: "PAUSED", retryable: false });
+  });
+
+  it("settles first what its desk names while a loan is past its end and not booked", async () => {
+    const c = ctx({ d: d(), chain: approved({ vaultManager: manager(), earliestMaturity: () => Promise.resolve(NOW - 1), pendingSettlements: () => Promise.resolve([3n]) }), indexer: silent() });
+    expect(await settled(await plan(c, now()))).toEqual([[3n]]);
+  });
+});

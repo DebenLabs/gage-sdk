@@ -93,7 +93,7 @@ const collected = funded.status === "funded" ? await gage.run({ action: "collect
 
 `run` answers the listing it opened in `loan` (`{ engine, loanId }`). `waitForFill` looks every 10 seconds for 5 minutes
 by default (`{ timeoutSeconds, pollSeconds }`) and answers `funded` (with `fundedAt`, `endsAt` and `receive`), `waiting`
-(still open to the vaults until `fundingDeadline`), `expired`, `cancelled` or `closed`. An expired or cancelled listing's
+(still open to the vaults until `fundingDeadline`, null while gage's index has not shown it), `expired`, `cancelled` or `closed`. An expired or cancelled listing's
 collateral comes back with `collect`. `cancel` takes back a listing still waiting.
 
 ## Repay, roll over, roll by itself, cash out
@@ -108,7 +108,8 @@ const result = await gage.run({ ...step, loanId, engine: loan.engine }, signer);
 ```
 
 - **`reclaim`** repays a running loan in full before its term ends and takes the collateral back. It approves the
-  repayment exactly. Repaying is never limited by a spend limit.
+  repayment exactly. Repaying is never limited by a spend limit. It goes on while gage's index gives no answer, once the
+  chain proves the loan public ([Private loans](getting-started.md#private-loans)); the other moves wait for the index.
 - **`roll`** rolls a running loan into a new loan of the same size on the same pledge, in one transaction: you add the old
   loan's fixed cost and the new fee, or keep what is over. `term` names a new term (the loan's own when omitted). The
   roll's price is signed for 30 seconds; one that costs more when it is sent than when it was planned is refused
@@ -116,7 +117,7 @@ const result = await gage.run({ ...step, loanId, engine: loan.engine }, signer);
 - **`auto_roll`** leaves a listing or a running loan to roll by itself: gage's keeper rolls it in its last hours into a
   loan of the same size and term, at most `maxCost` each (its fixed cost and fee together, never more than the loan's
   principal), up to four times. Without `maxCost`, twice what a roll of it costs now, held to four times the loan's own
-  cost and fee. It is the one action that leaves standing approvals: gage's rollover router may move the wallet's loans
+  cost and fee. It leaves standing approvals, as `put_auto_roll` does for a put: gage's rollover router may move the wallet's loans
   on that core and spend the repayments of four rolls, and of the rolls the wallet's other loans rolling by themselves
   there still need, until you withdraw them in your wallet. A `roll` keeps those in its approval too.
   **`cancel_auto_roll`** ends the instruction.

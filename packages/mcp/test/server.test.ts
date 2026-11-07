@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gageFrom, parseDeployment, TESTNET_MANIFEST } from "gage-sdk";
 import {
-  A, assetManifest, CORE, ctx, fakeChain, fakeSigner, fakeUpstream, GLD_CORE, GLD_FACTORY, GLD_VAULT, GLDX, LP_CORE, lpFablesManifest, lpFormatsManifest, lpLoan, lpManifest, lpQuoteRoute, lpStockManifest,
+  A, assetManifest, CORE, ctx, fakeChain, fakeSigner, fakeUpstream, GLD_CORE, GLD_FACTORY, GLD_VAULT, GLDX, LP_COMPANION, LP_CORE, LP_VAULT, lpFablesManifest, lpFormatsManifest, lpLoan, lpManifest, lpQuoteRoute, lpRewardsManifest, lpStockManifest,
   mainnetManifest, NVDA,
   SCHIFFY, UNI_ADAPTER, UNI_NFPM, USDG, V4_ADAPTER, V4_POOL, VAULT, WALLET, WETH,
 } from "gage-sdk/testing";
@@ -16,7 +16,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { afterEach, describe, expect, it } from "vitest";
 import { Ledger, MAINNET_LIMITS } from "../src/limits.js";
 import { createLocalMcp } from "../src/server.js";
-import { EXITS, PUTS, ROLLS, TESTNET_FABLES, TESTNET_LP, TESTNET_PARK, TESTNET_ROLLS, TESTNET_TOOLS } from "./testnet.js";
+import { EXITS, PUTS, ROLLS, TESTNET_FABLES, TESTNET_LP, TESTNET_LP_REWARDS, TESTNET_PARK, TESTNET_ROLLS, TESTNET_TOOLS } from "./testnet.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -48,7 +48,7 @@ describe("the local MCP on mainnet (D260)", () => {
     await client.connect(clientSide);
     cleanups.push(async () => { await client.close(); await server.close(); });
     // Eight reads, the two pool vault tools (D333) and a prepare per action: on mainnet, rating gage too (D302).
-    expect((await client.listTools()).tools).toHaveLength(22);
+    expect((await client.listTools()).tools).toHaveLength(26);
     expect(client.getInstructions()).toContain("on Robinhood Chain (4663), with real assets.");
     expect(client.getInstructions()).toContain("To let this server sign under spend limits");
     expect(client.getInstructions()).toContain("you may rate gage, agent #8845 in ERC-8004, with gage_prepare_feedback: your own score from 0 to 100, once a wallet. It is optional, and gage offers nothing for it.");
@@ -78,15 +78,15 @@ describe("the local MCP on mainnet (D260)", () => {
     await client.connect(clientSide);
     cleanups.push(async () => { await client.close(); await server.close(); });
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(36);
+    expect(names).toHaveLength(42);
     expect(names).toContain("gage_limits");
     expect(names).toContain("gage_feedback");
     expect(client.getInstructions()).toContain("Spend limits its owner set: it borrows at most 100 USDG a loan or loop and 250 USDG in any 24 hours");
-    expect(client.getInstructions()).toContain("leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools and rating gage are not limited");
+    expect(client.getInstructions()).toContain("leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus or sGAGE, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools, creating or managing a partner vault and rating gage are not limited");
     expect(client.getInstructions()).toContain("gage_roll, gage_auto_roll, gage_cancel_auto_roll");
     expect(client.getInstructions()).not.toContain("LP loans:");
     const limitsTool = (await client.listTools()).tools.find((t) => t.name === "gage_limits")!;
-    expect(limitsTool.description).toContain("leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools and rating gage are not limited");
+    expect(limitsTool.description).toContain("leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus or sGAGE, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools, creating or managing a partner vault and rating gage are not limited");
     expect(client.getInstructions()).toContain("you may rate gage, agent #8845 in ERC-8004, with gage_feedback");
     const loan = (principal: bigint) => ({ token: NVDA, collateral: "5000000000000000000", principal: String(principal), cap: String((principal * 101n) / 100n), term: 604_800 });
     const over = await client.callTool({ name: "gage_borrow", arguments: loan(150_000_000n) });
@@ -135,8 +135,8 @@ describe("the local MCP", () => {
     expect(client.getInstructions()).toContain("The action tools (gage_borrow, gage_leverage, gage_cancel, gage_reclaim, gage_cash_out, "
       + ROLLS.map((a) => `gage_${a}, `).join("") + "gage_earn_deposit, gage_earn_redeem, gage_collect" + PUTS.map((a) => `, gage_${a}`).join("")
       + (TESTNET_LP ? ", gage_lp_borrow, gage_lp_repay, gage_lp_return_position, gage_lp_collect, gage_lp_withdraw, gage_lp_deposit, gage_lp_redeem, "
-        + "gage_lp_claim_bonus, gage_lp_roll" + (TESTNET_FABLES ? ", gage_lp_wrap, gage_lp_unwrap" : "") + ", gage_lp_create_vault, gage_lp_vault_add_pool, gage_lp_vault_remove_pool" : "")
-      + (TESTNET_PARK ? ", gage_park, gage_unpark" : "") + EXITS.map((a) => `, gage_${a}`).join("") + ")");
+        + "gage_lp_claim_bonus, " + (TESTNET_LP_REWARDS ? "gage_lp_claim_rewards, " : "") + "gage_lp_roll" + (TESTNET_FABLES ? ", gage_lp_wrap, gage_lp_unwrap" : "") + ", gage_lp_create_vault, gage_lp_vault_add_pool, gage_lp_vault_remove_pool" : "")
+      + (TESTNET_PARK ? ", gage_park, gage_unpark" : "") + EXITS.map((a) => `, gage_${a}`).join("") + ", gage_create_vault, gage_vault_manage)");
     if (!TESTNET_ROLLS) expect(client.getInstructions()).not.toContain("gage_roll");
     // Exit now, once a current generation names the chain's exit desk: a prepare and an action for each exit action.
     expect(names.filter((n) => n.includes("exit"))).toEqual([...EXITS.map((a) => `gage_prepare_${a}`), ...EXITS.map((a) => `gage_${a}`)]);
@@ -171,7 +171,7 @@ describe("the local MCP", () => {
   it("without a key, reads and prepares unsigned transactions only", async () => {
     const client = await connect();
     const tools = (await client.listTools()).tools;
-    expect(tools).toHaveLength(21);
+    expect(tools).toHaveLength(25);
     expect(tools.some((t) => t.annotations?.destructiveHint)).toBe(false);
     expect(client.getInstructions()).toMatch(/holds no key/);
   });
@@ -180,9 +180,9 @@ describe("the local MCP", () => {
     const signer = fakeSigner();
     const client = await connect(signer);
     const tools = (await client.listTools()).tools;
-    expect(tools).toHaveLength(33);
+    expect(tools).toHaveLength(39);
     expect(tools.filter((t) => t.annotations?.destructiveHint).map((t) => t.name)).toEqual([
-      "gage_borrow", "gage_leverage", "gage_cancel", "gage_reclaim", "gage_cash_out", "gage_roll", "gage_auto_roll", "gage_cancel_auto_roll", "gage_earn_deposit", "gage_earn_redeem", "gage_collect",
+      "gage_borrow", "gage_leverage", "gage_cancel", "gage_reclaim", "gage_cash_out", "gage_roll", "gage_auto_roll", "gage_cancel_auto_roll", "gage_earn_deposit", "gage_earn_redeem", "gage_collect", "gage_create_vault", "gage_vault_manage",
     ]);
     expect(client.getInstructions()).toContain(WALLET);
     const wallet = await client.callTool({ name: "gage_wallet", arguments: {} });
@@ -272,7 +272,7 @@ describe("the local MCP where the LP lane is public", () => {
     ]);
     // A vault funds only the pools of its mandate; without a factory in the release, no word of opening one.
     expect(client.getInstructions()).toContain("it funds loans only in the pools of its mandate (gage_lp_vaults funds). Its curator changes them with the lp_vault_add_pool and lp_vault_remove_pool tools.");
-    expect(client.getInstructions()).toContain("LP loans: gage_lp_positions lists a wallet's ETH/USDG or stock/USDG liquidity positions on Uniswap v3 or v4, SushiSwap v3 or Ramses that gage lends USDG against at a fixed cost");
+    expect(client.getInstructions()).toContain("LP loans: gage_lp_positions lists a wallet's ETH/USDG or stock/USDG liquidity positions on Uniswap v3 or v4, SushiSwap v3, Ouro v3 or Ramses that gage lends USDG against at a fixed cost");
     expect(client.getInstructions()).toContain("before its end it may be rolled into a new loan on the same position (the lp_roll tools)");
     expect(client.getInstructions()).toContain("A Uniswap v4 position leaves any subscription it has when it is pledged, and a native ETH pool's fees come as WETH.");
     // Without a Fables adapter in the release, no word of Fables and no wrap tools.
@@ -297,7 +297,7 @@ describe("the local MCP where the LP lane is public", () => {
     const client = await connectTo(gageFrom(ctx({ d: parseDeployment(lpFablesManifest()), indexer: indexer() })));
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names.filter((n) => n.includes("_lp_")).slice(-5)).toEqual(["gage_prepare_lp_roll", "gage_prepare_lp_wrap", "gage_prepare_lp_unwrap", "gage_prepare_lp_vault_add_pool", "gage_prepare_lp_vault_remove_pool"]);
-    expect(client.getInstructions()).toContain("SushiSwap v3, Ramses or Fables that gage lends USDG against");
+    expect(client.getInstructions()).toContain("SushiSwap v3, Ouro v3, Ramses or Fables that gage lends USDG against");
     expect(client.getInstructions()).toContain("Fables receipts not wrapped yet are listed apart (fablesReceipts): the lp_borrow tools take their adapter and rangeId and wrap them into a position first");
   });
 
@@ -307,6 +307,26 @@ describe("the local MCP where the LP lane is public", () => {
     // D319: the registry's mayOpenVault, a curator it allows or anyone once it opens creation; ERC-4626 shares that move.
     expect(client.getInstructions()).toContain("and a wallet the registry lets open one (a curator it allows, or anyone once it opens vault creation) opens one with the lp_create_vault tools.");
     expect(client.getInstructions()).toContain("an LP vault is an ERC-4626 whose shares (gLP, raw in the vault's own shareDecimals) move between wallets");
+  });
+
+  it("claims a reserve vault's sGAGE where the release names the lane's rewards bridge, counting nothing against the limits; an LP vault with no reserve refuses, and with no bridge there is no such tool", async () => {
+    const ledger = new Ledger(path.join(mkdtempSync(path.join(tmpdir(), "gage-limits-")), "wallet"));
+    const served = (chain = fakeChain()) => gageFrom(ctx({ d: parseDeployment({ ...mainnetManifest(), lpLane: lpRewardsManifest().lpLane }), chain, indexer: indexer() }));
+    const signer = fakeSigner();
+    const reserve = fakeChain({ lpCompanion: () => Promise.resolve(LP_COMPANION), lpRewardClaimable: () => Promise.resolve(3n * 10n ** 18n) });
+    const client = await connectTo(served(reserve), signer, { limits: MAINNET_LIMITS, ledger });
+    expect((await client.listTools()).tools.map((t) => t.name).filter((n) => n.includes("claim_rewards"))).toEqual(["gage_prepare_lp_claim_rewards", "gage_lp_claim_rewards"]);
+    expect(client.getInstructions()).toContain("gage_portfolio says what a wallet may claim (lp.vaults sgageClaimable), and the lp_claim_rewards tools claim it, moving no USDG.");
+    const done = await client.callTool({ name: "gage_lp_claim_rewards", arguments: { vault: LP_VAULT } });
+    expect(done.structuredContent).toMatchObject({ status: "done", sent: [{ label: "Claim 3 sGAGE" }] });
+    expect(signer.sent.map((t) => t.to.toLowerCase())).toEqual([LP_COMPANION]);
+    expect((await client.callTool({ name: "gage_limits", arguments: {} })).structuredContent).toMatchObject({ borrow: { used: "0" }, deposit: { used: "0" } });
+    const refused = await (await connectTo(served(), signer)).callTool({ name: "gage_lp_claim_rewards", arguments: { vault: LP_VAULT } });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused.content)).toContain("NOT_RESERVE_VAULT");
+    const plain = await connectTo(lpMainnet(100_000_000n), signer);
+    expect((await plain.listTools()).tools.map((t) => t.name).filter((n) => n.includes("claim_rewards"))).toEqual([]);
+    expect(plain.getInstructions()).not.toContain("lp_claim_rewards");
   });
 
   it("rolls an LP loan under spend limits by what its new loan borrows beyond the old one: a roll of the same size counts nothing", async () => {

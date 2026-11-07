@@ -23,8 +23,12 @@ export interface SentStep {
 export interface RunResult {
   action: ActionInput["action"];
   wallet: Address;
-  /** done: every step succeeded. nothing_to_do: the plan had no step. stopped: see `error`; the steps in `sent` stand. */
-  status: "done" | "nothing_to_do" | "stopped";
+  /**
+   * done: every step succeeded. nothing_to_do: the plan had no step. partial: every step it planned succeeded, or it had
+   * none, but part of what it reads did not answer, so more may be ready: see `notes`. stopped: see `error`; the steps in
+   * `sent` stand.
+   */
+  status: "done" | "nothing_to_do" | "partial" | "stopped";
   summary: Summary;
   notes: string[];
   sent: SentStep[];
@@ -36,6 +40,8 @@ export interface RunResult {
    * `waitForFill`), a loop's loan, a roll's new loan. Null for any other action, or when the receipt cannot be read.
    */
   loan: Made | null;
+  /** The partner vault a `create_vault` created, read from its own receipt: null when the receipt cannot be read. Absent for any other action. */
+  vault?: Address | null;
 }
 /** What a spend limit holds for one run (D297), until the run ends. */
 export interface Hold {
@@ -49,7 +55,7 @@ export interface Hold {
 export type SpendLimit = (view: View) => Hold | Promise<Hold>;
 
 export interface RunOptions {
-  /** Called as each sent step settles, for progress. */
+  /** Called as each sent step settles, for progress. What it throws or rejects with stops nothing: the answer's `notes` say so. */
   onStep?: (step: SentStep) => void;
   /** How the run waits before simulating a step again (tests pass a fast one). */
   sleep?: (ms: number) => Promise<void>;
@@ -102,18 +108,30 @@ export async function run(c: Ctx, input: ActionInput, signer: Signer, options: R
   let p = await plan(c, input);
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const sent: SentStep[] = [];
-  let loan: Made | null = null;
+  let loan: Made | null = null, vault: Address | null = null;
   // The steps of the plan being sent, from `from` in `sent` (a plan planned again starts its own count).
   let from = 0;
   // Once every step went through, the answer may carry the line that a rating of gage is open (D302).
   const rate = rateNote(c, input.action);
   // A step whose send failed after the wallet's nonce moved: it may have gone out, so it is not offered as unsent.
   let doubtful = false;
+  // What the caller's own code did: said in the answer, and never in its place. Once a transaction has gone out, an error
+  // would read as one to ask again, and asking again is a second listing or deposit.
+  const failures = new Set<string>();
   const answer = (status: RunResult["status"], error: RunResult["error"] = null): RunResult => ({
-    action: input.action, wallet, status, summary: p.summary, notes: status === "done" && rate ? [...p.notes, rate] : p.notes, sent,
-    unsent: p.steps.slice(sent.length - from + (doubtful ? 1 : 0)).map((s) => s.label), error, loan,
+    action: input.action, wallet, status, summary: p.summary, notes: [...p.notes, ...(status === "done" && rate ? [rate] : []), ...failures], sent,
+    unsent: p.steps.slice(sent.length - from + (doubtful ? 1 : 0)).map((s) => s.label), error, loan, ...(p.vault ? { vault } : {}),
   });
-  if (!p.steps.length) return answer("nothing_to_do");
+  const progress = (step: SentStep) => {
+    const failed = () => { failures.add("Your onStep callback failed; the run went on without it."); };
+    try {
+      const returned: unknown = options.onStep?.(step);
+      if (returned instanceof Promise) returned.catch(failed);
+    } catch {
+      failed();
+    }
+  };
+  if (!p.steps.length) return answer(p.partial ? "partial" : "nothing_to_do");
   // The limit is asked with the plan, and again with a plan planned again whose view is another action's: a borrow
   // against Fables receipts wraps them first (lp_wrap's view), and its loan is planned, and limited, once that is mined.
   const holds: Hold[] = [];
@@ -144,41 +162,69 @@ export async function run(c: Ctx, input: ActionInput, signer: Signer, options: R
           doubtful = true;
           throw new ApiError("SEND_UNKNOWN", "The signer failed after the wallet sent a transaction, which may be this one; look up the wallet's latest transaction before sending it again", 502, false, { cause: error });
         }
+        // A signer's own refusal is its answer (another chain's transaction, say), and nothing went out.
+        if (error instanceof ApiError) {
+          if (step.final) spent = false;
+          throw error;
+        }
         throw new ApiError("SEND_FAILED", "The signer did not send the transaction; check its ETH for gas and its network", 502, true, { cause: error });
       }
     } catch (error) {
       return answer("stopped", refusalOf(error));
     }
-    const mined = await c.chain.wait(hash);
+    // A Chain that throws here cannot say it was mined: the step stands as sent, to look up by hash.
+    const mined = await Promise.resolve().then(() => c.chain.wait(hash)).catch(() => null);
     const done: SentStep = { label: step.label, kind: step.kind, hash, outcome: mined === null ? "pending" : mined ? "succeeded" : "reverted" };
     sent.push(done);
-    options.onStep?.(done);
+    progress(done);
     if (mined === null) return answer("stopped", { code: "TX_PENDING", message: "A transaction was sent but is not mined yet; look it up by hash before acting again", retryable: false });
     if (!mined) {
       if (step.final) spent = false;
       return answer("stopped", { code: "TX_FAILED", message: "The transaction reverted on chain, or another of the wallet's took its place", retryable: false });
     }
-    if (step.final && p.made) {
-      const receipt = await c.chain.sent(hash);
-      loan = receipt ? p.made(receipt.logs) : null;
+    if (step.final && (p.made || p.vault)) {
+      try {
+        const receipt = await c.chain.sent(hash);
+        loan = receipt && p.made ? p.made(receipt.logs) : null;
+        vault = receipt && p.vault ? p.vault(receipt.logs) : null;
+      } catch {
+        // The step stands: what it opened is unknown, as for a receipt that cannot be read.
+      }
     }
     return null;
   };
-  try {
+  const release = async () => {
+    for (const hold of holds) {
+      try {
+        await hold.release(spent);
+      } catch {
+        failures.add("The spend limit could not be told how this run ended: it may still count this action's amount.");
+      }
+    }
+  };
+  const carryOut = async (): Promise<RunResult> => {
     for (let replans = 0; ; replans += 1) {
       for (const step of p.steps) {
         const stopped = await send(step);
         if (stopped) return stopped;
       }
-      if (!p.again) return answer("done");
+      if (!p.again) return answer(p.partial ? "partial" : "done");
       // The steps that had to come first are mined: the action is planned again from the chain, and its own steps sent.
       if (replans >= REPLANS) return answer("stopped", { code: "SETTLEMENT_DUE", message: "The vault still has a loan to settle; try again shortly", retryable: true });
       try { p = await plan(c, input); } catch (error) { return answer("stopped", refusalOf(error)); }
       from = sent.length;
-      if (!p.steps.length) return answer("done");
+      if (!p.steps.length) return answer(p.partial ? "partial" : "done");
       try { await ask(); } catch (error) { return answer("stopped", refusalOf(error)); }
     }
-  } finally {
-    for (const hold of holds) await hold.release(spent);
+  };
+  let result: RunResult;
+  try {
+    result = await carryOut();
+  } catch (error) {
+    // Nothing above throws once a step is out; should it, what went out still stands, and the answer says so.
+    if (!sent.length) { await release(); throw error; }
+    result = answer("stopped", { ...refusalOf(error), retryable: false });
   }
+  await release();
+  return failures.size ? { ...result, notes: [...new Set([...result.notes, ...failures])] } : result;
 }

@@ -42,9 +42,9 @@ Amounts are raw integers as decimal strings (USDG has 6 decimals, tokens their o
 ## Quickstart: your AI agent
 
 ```bash
-npx -y gage-mcp init                      # the agent's own wallet on this computer: prints its address, never its key
-claude mcp add gage -- npx -y gage-mcp    # Claude Code
-codex mcp add gage -- npx -y gage-mcp     # Codex
+npx -y gage-mcp@0.9.0 init                      # the agent's own wallet on this computer: prints its address, never its key
+claude mcp add gage -- npx -y gage-mcp@0.9.0    # Claude Code
+codex mcp add gage -- npx -y gage-mcp@0.9.0     # Codex
 ```
 
 Fund that wallet with only what the agent may use, and a little ETH for gas. The agent then borrows and earns when you

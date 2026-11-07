@@ -7,6 +7,7 @@ import { parseUnits } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import { agentTools } from "../examples/agent-tools.js";
 import { borrow, collateralOf, exactQuote, loop, quoteAtLeastMinimum, termOf } from "../examples/borrow.js";
+import { createVault, tighten, vaultForSafe, withdrawCall } from "../examples/create-vault.js";
 import { deposit } from "../examples/deposit.js";
 import { collectExits, exitPreview, leave } from "../examples/exit-now.js";
 import { lendMarkets, quoteIn } from "../examples/generations.js";
@@ -46,25 +47,53 @@ describe("the examples", () => {
     expect(borrowQuote).toHaveBeenCalledWith({ token: NVDA, maxCollateral: (least > whole ? least : whole).toString(), term: terms[0]!.seconds });
     expect(answer).toMatchObject({ asset: nvda.symbol, summary: "Pledge 1 NVDA…", terms: terms.map((t) => `${t.days} days`) });
     await expect(quote({ ...gage, borrowQuote } as unknown as Gage, "nothing")).rejects.toThrow("gage takes no nothing as collateral now");
+    // With no token named, the first a partner vault lends against: a token admitted and not yet lent against has no quote.
+    const assets = () => Promise.resolve({ assets: [{ token: A(0x71), symbol: "WETH", decimals: 18, minAmount: "1", vaults: 0 }, { ...nvda, vaults: 1 }] });
+    expect(await quote({ ...gage, assets, borrowQuote } as unknown as Gage)).toMatchObject({ asset: nvda.symbol });
   });
 
-  it("deposit: the first USDG vault that takes deposits, the amount in raw USDG, carried out by the signer", async () => {
+  it("deposit: the vault the caller named, whatever sorts first in the list, the amount in raw USDG, carried out by the signer", async () => {
     const run = vi.fn(() => Promise.resolve({ status: "done" }));
     const earnVaults = () => Promise.resolve({ vaults: [
       { vault: A(0x71), lends: false, totalAssetsUSDG: "1" },
       { vault: A(0x72), lends: true, totalAssets: "1", asset: { symbol: "GLDx" } },
       { vault: A(0x73), lends: true, totalAssetsUSDG: "5" },
+      { vault: A(0x74), lends: true, totalAssetsUSDG: "9" },
     ] });
     const signer = fakeSigner();
-    await deposit({ ...mainnet(), earnVaults, run } as unknown as Gage, signer, "10.5");
-    expect(run).toHaveBeenCalledWith({ action: "earn_deposit", vault: A(0x73), amount: "10500000" }, signer);
-    const none = () => Promise.resolve({ vaults: [] });
-    await expect(deposit({ ...mainnet(), earnVaults: none, run } as unknown as Gage, signer, "1")).rejects.toThrow("No partner vault takes USDG deposits now");
+    const g = { ...mainnet(), earnVaults, run } as unknown as Gage;
+    await deposit(g, signer, A(0x74), "10.5");
+    expect(run).toHaveBeenCalledWith({ action: "earn_deposit", vault: A(0x74), amount: "10500000" }, signer);
+    // A name in any case is the same vault.
+    await deposit(g, signer, A(0x74).toUpperCase().replace("0X", "0x"), "1");
+    expect(run).toHaveBeenLastCalledWith({ action: "earn_deposit", vault: A(0x74), amount: "1000000" }, signer);
+    run.mockClear();
+    // Nothing else stands in for a vault that is not there, lends no more or takes another asset.
+    await expect(deposit(g, signer, A(0x75), "1")).rejects.toThrow("That vault takes no USDG deposits now");
+    await expect(deposit(g, signer, A(0x71), "1")).rejects.toThrow("That vault takes no USDG deposits now");
+    await expect(deposit(g, signer, A(0x72), "1")).rejects.toThrow("That vault takes no USDG deposits now");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("create-vault: a free name, for a signer or a Safe, then its manager's calls and a holder's way out, every input the schema's", async () => {
+    const signer = fakeSigner();
+    const run = checkedRun({ vault: A(0x71), sent: [{ hash: "0x1", label: "Create the vault" }] }, { sent: [{ hash: "0x2", label: "Set the largest loan" }] });
+    const gage = { ...mainnet(), run } as unknown as Gage;
+    expect(await createVault(gage, signer, "Acme Stocks", "1500")).toMatchObject({ status: "done", vault: A(0x71), sent: ["0x1"] });
+    expect(run.mock.calls[0]![0]).toEqual({ action: "create_vault", name: "Acme Stocks", term: 604_800, feeBps: 1_000, maxLoan: "1500000000" });
+    const made = await vaultForSafe(mainnet(), WALLET, "Acme Stocks").catch((e: unknown) => e);
+    // The fixture's factory admits every account and classifies its one stock.
+    expect(made).toMatchObject({ lendsAgainst: ["NVDAx"], calls: [{ value: "0" }] });
+    expect(await tighten(gage, signer, VAULT)).toMatchObject({ status: "done", sent: ["Set the largest loan"], waiting: [] });
+    expect(run.mock.calls[1]![0]).toEqual({ action: "vault_manage", vault: VAULT, maxLoan: "750000000", cashKeptFreeBps: 1_000, name: "Acme Stocks, careful" });
+    const nothing = await withdrawCall(mainnet(), WALLET, VAULT);
+    expect(nothing).toMatchObject({ settlementDue: false, payableNow: expect.any(String) as string });
+    expect(nothing.call).toMatchObject({ to: VAULT, value: "0" });
   });
 
   it("agent-tools: the catalogue without a signer, then capabilities and collateral through execute", async () => {
     const answer = await agentTools(mainnet());
-    expect(answer.tools).toHaveLength(20);
+    expect(answer.tools).toHaveLength(22);
     expect(answer.tools[0]).toBe("gage_capabilities: gage capabilities");
     expect(answer.capabilities).toMatchObject({ network: "mainnet", chainId: 4663 });
     expect(answer.collateral).toHaveProperty("assets");
@@ -215,8 +244,9 @@ describe("the examples", () => {
     expect(run).toHaveBeenCalledWith({ action: "lp_borrow", adapter: UNI_ADAPTER, tokenId: "9", term: overview.terms[0], maxCostBps: 90 }, signer);
     await repayLpLoan(g, signer, "1");
     expect(run).toHaveBeenLastCalledWith({ action: "lp_repay", loanId: "1" }, signer);
-    await lendToLpVault(g, signer, "50000000");
+    await lendToLpVault(g, signer, A(0x141), "50000000");
     expect(run).toHaveBeenLastCalledWith({ action: "lp_deposit", vault: A(0x141), amount: "50000000" }, signer);
+    await expect(lendToLpVault(g, signer, A(0x142), "1")).rejects.toThrow("That LP vault takes no deposits now");
     await expect(lpOverview(mainnet(), WALLET)).rejects.toMatchObject({ code: "LP_CLOSED" });
   });
 
@@ -248,7 +278,9 @@ describe("the examples", () => {
     const sendCalls = vi.fn(() => Promise.resolve());
     const g = { ...gage, parkPositions, parkCalls, unparkCalls } as unknown as Gage;
     expect((await parkable(g, WALLET)).map((p) => p.refusal)).toEqual(["ETH_NOT_SUPPORTED", null]);
-    expect(await park(g, WALLET, sendCalls)).toEqual({ summary: { title: "Park" }, calls: 2 });
+    await expect(park(g, WALLET, sendCalls, A(0x143))).rejects.toThrow("No out-of-range position of this wallet parks into that vault now");
+    expect(parkCalls).not.toHaveBeenCalled();
+    expect(await park(g, WALLET, sendCalls, VAULT)).toEqual({ summary: { title: "Park" }, calls: 2 });
     expect(parkCalls).toHaveBeenCalledTimes(2);
     expect(parkCalls).toHaveBeenCalledWith({ wallet: WALLET, manager: A(0x106), id: "2", vault: VAULT });
     expect(sendCalls).toHaveBeenNthCalledWith(1, { calls: [{ to: A(0x106), data: "0x01", value: 0n }] });

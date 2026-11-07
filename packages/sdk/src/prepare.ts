@@ -17,12 +17,16 @@ export interface NextTx {
    */
   transaction: { from: Address; to: Address; data: `0x${string}`; value: string; chainId: number; gas: string };
 }
-/** One transaction of an action whose transactions go together (park and unpark, D334): unsigned, its gas the wallet's to price. */
-export interface BatchTx { label: string; kind: "approve" | "action"; final: boolean; transaction: { from: Address; to: Address; data: `0x${string}`; value: string; chainId: number } }
+/**
+ * One transaction of an action whose transactions go together (park and unpark, D334): unsigned, its gas the wallet's to
+ * price. `extraGas`: what a client sending it on its own adds to its estimate, "0" for most (see `NextTx`).
+ */
+export interface BatchTx { label: string; kind: "approve" | "action"; final: boolean; extraGas: string; transaction: { from: Address; to: Address; data: `0x${string}`; value: string; chainId: number } }
 export interface Prepared {
   action: ActionInput["action"];
   wallet: Address;
-  status: "approval_required" | "ready" | "done";
+  /** `partial`: nothing to send from what was read, but part of it did not answer, so `notes` name what to ask again. */
+  status: "approval_required" | "ready" | "done" | "partial";
   summary: Summary;
   /** The figures the review page draws; an agent reads `summary`. */
   view: View;
@@ -63,10 +67,10 @@ export async function prepareNext(c: Ctx, input: ActionInput): Promise<Prepared>
   // A batch's every transaction, built now: planned again after its first, it would read a state half changed.
   const calls = p.batch && first ? await Promise.all(p.steps.map(async (s): Promise<BatchTx> => {
     const t = await s.build();
-    return { label: s.label, kind: s.kind, final: s.final, transaction: { from: wallet, to: t.to, data: t.data, value: t.value.toString(), chainId: c.d.chainId } };
+    return { label: s.label, kind: s.kind, final: s.final, extraGas: (s.extraGas ?? 0n).toString(), transaction: { from: wallet, to: t.to, data: t.data, value: t.value.toString(), chainId: c.d.chainId } };
   })) : null;
   return {
-    action: input.action, wallet, status: !next ? "done" : next.kind === "approve" ? "approval_required" : "ready",
+    action: input.action, wallet, status: !next ? (p.partial ? "partial" : "done") : next.kind === "approve" ? "approval_required" : "ready",
     summary: p.summary, view: p.view, next, then: rest.map((s) => s.label), notes: rate ? [...p.notes, rate] : p.notes,
     ...(p.again && next ? { again: true as const } : {}),
     ...(calls ? { calls } : {}),

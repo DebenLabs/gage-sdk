@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { Gage } from "../src/client.js";
 import { createPoolVaultsInput, poolVaultsInput } from "../src/pools.js";
 import {
-  ACTIONS, actionShapes, borrowQuoteInput, leverageQuoteInput, loanInput, lpQuoteInput, parkPositionsInput, putQuoteInput, vaultInput, walletInput,
+  ACTIONS, actionShapes, borrowQuoteInput, createVaultInput, leverageQuoteInput, loanInput, lpQuoteInput, parkPositionsInput, putQuoteInput, vaultInput, vaultOnChainInput, walletInput,
 } from "../src/schemas.js";
 import { gageTools, poolVaultTools, type GageTool } from "../src/tools.js";
 import { WALLET } from "../src/testing.js";
@@ -69,6 +69,7 @@ const METHOD: Record<string, string> = {
   gage_put_quote: "putQuote(input)", gage_lp_positions: "lpPositions(wallet)", gage_lp_quote: "lpQuote(input)", gage_lp_loans: "lpLoans(wallet)",
   gage_lp_vaults: "lpVaults()", gage_park_positions: "parkPositions(wallet, also)", gage_wallet: "balances(signer.address)",
   gage_pool_vaults: "poolVaults(input)", gage_create_pool_vaults: "createPoolVaults(input)",
+  gage_create_partner_vault: "createVault(input)", gage_vault_on_chain: "vaultOnChain(input)",
 };
 
 /** The methods that take an input, with its schema. */
@@ -84,6 +85,8 @@ const METHODS: [string, string, z.ZodType][] = [
   ["lpQuote(input)", "a quote against one LP position", lpQuoteInput],
   ["poolVaults(input?)", "the pools among the partner vaults", poolVaultsInput],
   ["createPoolVaults(input)", "the calls that create a pool's vaults, from its curator", createPoolVaultsInput],
+  ["createVault(input)", "the call that creates one partner vault, from its curator", createVaultInput],
+  ["vaultOnChain(input)", "one partner vault from the chain alone, and what it can pay a holder now", vaultOnChainInput],
 ];
 
 /** A catalogue that serves every action, for its words: `gageTools` reads only `actions` and whether a lane is public. */

@@ -5,14 +5,15 @@ Three ways for an AI agent to use gage, from no key at all to a wallet of its ow
 | | Who signs | Use |
 |---|---|---|
 | **Hosted agent service** (Steward) | the wallet's owner, on gage.cash's review page | `https://mcp.gage.cash/mcp` (MCP) or `https://mcp.gage.cash/v1/…` (HTTP); no install, no key |
-| **gage-mcp** (Valet) | the agent, with its own wallet, under spend limits its owner sets | `npx -y gage-mcp`, over stdio on the agent's computer |
+| **gage-mcp** (Valet) | the agent, with its own wallet, under spend limits its owner sets | `npx -y gage-mcp@0.9.0`, over stdio on the agent's computer |
 | **gage-sdk's tools** | your code: no signer, a signer, or a signer under your own limit | `gageTools(gage, { signer?, limit? })` in any agent framework |
 
 All three serve the same tools, with the same names, inputs and words, from one catalogue in gage-sdk: reads, a
 `gage_prepare_<action>` for each action served (the next unsigned transaction, signing nothing), and, with a signer,
 `gage_wallet` and a `gage_<action>` that signs and sends each step. Every tool's input is in the
 [Reference](reference.md). gage never holds a key, and no tool sends arbitrary calldata: text an agent reads (a token's
-name, a vault's) cannot make it pay someone.
+name, a vault's) cannot make it send a call of its own making. An agent that follows such text can still call a real tool,
+so treat it as data; gage-mcp's limits keep the one input that names who gets paid, a vault's `feeRecipient`, to the wallet.
 
 ## Tools in an agent framework
 
@@ -41,15 +42,15 @@ const limit = usdgLimit(gage.deployment.usdg, 100_000_000n, 250_000_000n);
 return gageTools(gage, { signer, limit });
 ```
 
-- `createGage({ actions })` serves fewer actions; `poolVaultTools(gage)` adds `gage_pool_vaults` and
-  `gage_create_pool_vaults`, which sign nothing.
+- `createGage({ actions })` serves fewer actions; `poolVaultTools(gage)` adds `gage_pool_vaults`,
+  `gage_create_pool_vaults`, `gage_create_partner_vault` and `gage_vault_on_chain`, which sign nothing.
 
 ## gage-mcp: the agent's own wallet
 
 `gage-mcp` serves the catalogue over stdio, for an agent that runs commands (Claude Code, Codex, Cursor, Hermes, …).
 
 ```bash
-npx -y gage-mcp init
+npx -y gage-mcp@0.9.0 init
 ```
 
 `init` makes the agent's own wallet on that computer: its key in `~/.gage/agent-4663.key`, readable only by that user,
@@ -57,14 +58,14 @@ made once and never overwritten. It prints the address, its spend limits and how
 Nobody funds it but its owner: send it only what the agent may use, and a little ETH for gas. Then:
 
 ```bash
-claude mcp add gage -- npx -y gage-mcp
+claude mcp add gage -- npx -y gage-mcp@0.9.0
 ```
 
-Any client with an `mcpServers` file takes `{ "mcpServers": { "gage": { "command": "npx", "args": ["-y", "gage-mcp"] } } }`.
+Any client with an `mcpServers` file takes `{ "mcpServers": { "gage": { "command": "npx", "args": ["-y", "gage-mcp@0.9.0"] } } }`.
 Without a key the server reads and prepares; with `init`'s wallet (or `GAGE_PRIVATE_KEY_FILE`, a key file of the agent's
 own) it signs gage's own transactions with it, exact-amount approvals first, each step simulated before it is sent.
 
-From your own code, as an MCP client ([examples/stdio-client.ts](../../mcp/examples/stdio-client.ts), in gage-mcp):
+From your own code, as an MCP client ([examples/stdio-client.ts](https://github.com/DebenLabs/gage-sdk/blob/main/packages/mcp/examples/stdio-client.ts), in gage-mcp):
 
 ```ts
 const client = new Client({ name: "my-agent", version: "1.0.0" });
@@ -79,6 +80,7 @@ await client.connect(new StdioClientTransport({ ...server, env: { ...getDefaultE
 | `GAGE_MAX_BORROW_DAY_USDG` | 250 | the most loans, loops and LP loans borrow in any 24 hours |
 | `GAGE_MAX_DEPOSIT_USDG` | 100 | the most one deposit (a park's too) puts into a partner vault or an LP vault |
 | `GAGE_MAX_DEPOSIT_DAY_USDG` | 250 | the most deposits put in in any 24 hours |
+| `GAGE_ALLOW_FEE_RECIPIENT` | none | the one address, besides this wallet, a vault's fee recipient may be set to while any limit is on |
 
 Amounts of USDG, whole or with up to six decimals; `0` stops that kind of action, `off` lifts that limit, and any other
 setting stops the server from starting (`INVALID_LIMIT`). An action past a limit is refused before anything is sent
@@ -94,7 +96,7 @@ files can lift them, so the wallet's balance is the limit that always holds.
 
 Other settings: `GAGE_NETWORK` (`mainnet`, the default, or `testnet`), `GAGE_HOME` (`~/.gage`), `GAGE_PRIVATE_KEY_FILE`,
 `GAGE_PRIVATE_KEY` (removed from the environment once read), `GAGE_RPC_URL`, `GAGE_INDEXER_URL`, `GAGE_RATES_URL`,
-`GAGE_VALUATION_URL`, `GAGE_API_KEY`. gage-mcp's [README](../../mcp/README.md) has every setting.
+`GAGE_VALUATION_URL`, `GAGE_API_KEY`. gage-mcp's [README](https://github.com/DebenLabs/gage-sdk/blob/main/packages/mcp/README.md) has every setting.
 
 ## The hosted agent service and its review links
 
@@ -107,9 +109,9 @@ confirms it in their own wallet. The service never signs and holds no key.
 const response = await fetcher(`${HOSTED}/v1/prepare`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
 ```
 
-- **What it prepares**: `borrow`, `leverage`, `cancel`, `reclaim`, `earn_deposit`, `earn_redeem`, `collect` and
-  `feedback`, the actions the review page draws, besides every read. Rolling over, cashing out and the rest answer
-  `ACTION_NOT_SERVED` there: they are done on gage.cash, or with gage-mcp or gage-sdk.
+- **What it prepares**: `borrow`, `leverage`, `cancel`, `reclaim`, `cash_out`, `roll`, `earn_deposit`, `earn_redeem`,
+  `collect` and `feedback`, the actions the review page draws, besides every read. Leaving a loan to roll by itself and
+  the rest answer `ACTION_NOT_SERVED` there: they are done on gage.cash, or with gage-mcp or gage-sdk.
 - **The answer** is `prepare`'s, plus `review: { url, expiresAt }`. A link lasts 30 minutes and plans the action again
   from the chain each time it is opened; the page shows only gage's own words and figures, never text an agent sent,
   and signs a step only if it decodes as a call gage-sdk plans for that action.

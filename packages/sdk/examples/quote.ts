@@ -13,7 +13,8 @@ export async function quote(gage: Gage, symbol?: string) {
   const { assets } = await gage.assets();
   // Collateral lent in USDG: a row naming another lend asset is borrowed in that asset instead.
   const lentInUsdg = assets.filter((a) => !("asset" in a) || a.asset.symbol === "USDG");
-  const asset = lentInUsdg.find((a) => symbol === undefined || a.symbol.toLowerCase() === symbol.toLowerCase());
+  // With no symbol, the first token a partner vault lends against: a token admitted with no vault has no quote yet.
+  const asset = lentInUsdg.find((a) => (symbol === undefined ? a.vaults !== 0 : a.symbol.toLowerCase() === symbol.toLowerCase()));
   if (!asset) throw new Error(`gage takes no ${symbol ?? "token"} as collateral now`);
   const term = terms[0];
   if (!term) throw new Error("gage offers no loan term now");

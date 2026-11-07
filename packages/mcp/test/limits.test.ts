@@ -16,6 +16,33 @@ const deposit = (n: number, token?: Address) => ({ action: "earn_deposit", amoun
 const code = async (f: () => unknown) => { try { await f(); return "none"; } catch (e) { return (e as { code?: string }).code ?? String(e); } };
 
 describe("Valet's spend limits (D297)", () => {
+  describe("a vault's fee recipient", () => {
+    const WALLET = "0x2222222222222222222222222222222222222222" as Address, ELSEWHERE = "0x3333333333333333333333333333333333333333" as Address;
+    const manage = (feeRecipient?: Address) => ({ action: "vault_manage", vault: NVDA, name: "Acme", manager: WALLET, changes: [], ...(feeRecipient ? { feeRecipient } : {}) }) as unknown as View;
+    const limit = (limits: NonNullable<ReturnType<typeof limitsFrom>>) => spendLimit(limits, new Ledger(dir()), USDG);
+
+    it("stays this wallet's while any limit is on: anything else, which redirects fees not yet claimed too, is refused before anything is sent", async () => {
+      expect(await code(() => limit(MAINNET_LIMITS)(manage(ELSEWHERE)))).toBe("FEE_RECIPIENT_LIMIT");
+      expect(await code(() => limit(limitsFrom({ GAGE_MAX_BORROW_USDG: "off", GAGE_MAX_BORROW_DAY_USDG: "off", GAGE_MAX_DEPOSIT_USDG: "off" }, 4663)!)(manage(ELSEWHERE)))).toBe("FEE_RECIPIENT_LIMIT");
+      expect(await code(() => limit(MAINNET_LIMITS)(manage(WALLET)))).toBe("none");
+      expect(await code(() => limit(MAINNET_LIMITS)(manage()))).toBe("none");
+    });
+
+    it("may go to the one address the owner names, or anywhere once every limit is off", async () => {
+      const named = limitsFrom({ GAGE_ALLOW_FEE_RECIPIENT: ELSEWHERE }, 4663)!;
+      expect(await code(() => limit(named)(manage(ELSEWHERE)))).toBe("none");
+      expect(await code(() => limit(named)(manage("0x4444444444444444444444444444444444444444")))).toBe("FEE_RECIPIENT_LIMIT");
+      const off = limitsFrom({ GAGE_MAX_BORROW_USDG: "off", GAGE_MAX_BORROW_DAY_USDG: "off", GAGE_MAX_DEPOSIT_USDG: "off", GAGE_MAX_DEPOSIT_DAY_USDG: "off" }, 4663)!;
+      expect(await code(() => limit(off)(manage(ELSEWHERE)))).toBe("none");
+      expect(await code(() => limitsFrom({ GAGE_ALLOW_FEE_RECIPIENT: "the owner's" }, 4663))).toBe("INVALID_LIMIT");
+    });
+
+    it("is said where the limits are said", () => {
+      expect(limitsSentence(MAINNET_LIMITS)).toMatch(/GAGE_ALLOW_FEE_RECIPIENT/);
+      expect(limitsOf(MAINNET_LIMITS, new Ledger(dir()), USDG).notLimited.join(" ")).toMatch(/fee recipient/);
+    });
+  });
+
   it("are 100 USDG an action and 250 in 24 hours on mainnet, for loans and for deposits apart; none on the testnet unless set", () => {
     expect(MAINNET_LIMITS).toEqual({ borrow: { each: 100_000_000n, day: 250_000_000n }, deposit: { each: 100_000_000n, day: 250_000_000n } });
     expect(limitsFrom({}, 4663)).toEqual(MAINNET_LIMITS);
@@ -129,15 +156,28 @@ describe("Valet's spend limits (D297)", () => {
     for (const action of ["reclaim", "cash_out", "earn_redeem", "cancel", "collect", "auto_roll", "cancel_auto_roll"]) await (await limit({ action } as unknown as View)).release(true);
     await (await limit(borrow(5_000, NVDA))).release(true);
     await (await limit(deposit(5_000, NVDA))).release(true);
-    // A loop or a put in a lend asset borrows that asset; closing or leaving a put to roll moves no USDG of a loan.
+    // A loop or a put in a lend asset borrows that asset, and a put's margin in another token is no USDG; closing or leaving a put to roll moves no USDG of a loan.
     const lent = { asset: { token: NVDA, symbol: "NVDA", decimals: 18 } };
-    for (const view of [{ action: "leverage", principal: usd(5_000), ...lent }, { action: "put_open", principal: "5000000000000000000", ...lent },
+    for (const view of [{ action: "leverage", principal: usd(5_000), ...lent }, { action: "put_open", token: NVDA, margin: "5000000000000000000", principal: "5000000000000000000", ...lent },
       { action: "put_roll", principal: "5000000000000000000", oldPrincipal: "5000000000000000000", ...lent }, { action: "put_close" }, { action: "put_auto_roll" }, { action: "put_cancel_auto_roll" }]) {
       await (await limit(view as unknown as View)).release(true);
     }
     expect(ledger.used("borrow") + ledger.used("deposit")).toBe(0n);
     expect(await code(() => limit(borrow(1)))).toBe("SPEND_LIMIT");
     expect(await code(() => limit(loop(1)))).toBe("SPEND_LIMIT");
+  });
+
+  // A put's most to lose is its margin, in USDG where it pledges USDG, though what it borrows is its stock token.
+  it("counts a put's USDG margin against the deposit limits, the stock token it borrows not at all", async () => {
+    const ledger = new Ledger(dir());
+    const limit = spendLimit({ borrow: { each: 0n, day: 0n }, deposit: { each: BigInt(usd(100)), day: BigInt(usd(150)) } }, ledger, USDG);
+    const put = (margin: number) => ({ action: "put_open", token: USDG, margin: usd(margin), principal: "5000000000000000000", asset: { token: NVDA, symbol: "NVDA", decimals: 18 } }) as unknown as View;
+    expect(await code(() => limit(put(100.01)))).toBe("SPEND_LIMIT");
+    await (await limit(put(100))).release(true);
+    expect(ledger.used("deposit")).toBe(BigInt(usd(100)));
+    expect(ledger.used("borrow")).toBe(0n);
+    expect(await code(() => limit(put(50.01)))).toBe("SPEND_LIMIT_DAY");
+    expect(() => limit(put(100.01))).toThrow("This put's margin is 100.01 USDG");
   });
 
   // The LP lane (docs/api.md "LP lane") lends and takes USDG alone: an LP loan borrows its principal, an LP vault's
@@ -157,7 +197,7 @@ describe("Valet's spend limits (D297)", () => {
     expect(ledger.used("deposit")).toBe(40_000_000n);
     // A borrow planned once its loan is open answers lp_withdraw's view: nothing new is borrowed, so nothing counts.
     // Wrapping Fables receipts, or unwrapping a position, moves no USDG.
-    for (const action of ["lp_repay", "lp_return_position", "lp_collect", "lp_withdraw", "lp_redeem", "lp_claim_bonus", "lp_wrap", "lp_unwrap", "lp_create_vault", "lp_vault_add_pool", "lp_vault_remove_pool"]) {
+    for (const action of ["lp_repay", "lp_return_position", "lp_collect", "lp_withdraw", "lp_redeem", "lp_claim_bonus", "lp_claim_rewards", "lp_wrap", "lp_unwrap", "lp_create_vault", "lp_vault_add_pool", "lp_vault_remove_pool"]) {
       await (await limit({ action, principal: usd(5_000), amount: usd(5_000) } as unknown as View)).release(true);
     }
     expect(ledger.used("borrow")).toBe(200_000_000n);
@@ -220,7 +260,7 @@ describe("Valet's spend limits (D297)", () => {
 
   it("say in one sentence what they hold and what they leave free, as notLimited lists it", () => {
     expect(limitsSentence(MAINNET_LIMITS)).toBe("it borrows at most 100 USDG a loan or loop and 250 USDG in any 24 hours, and deposits at most 100 USDG at a time and 250 USDG in any 24 hours. "
-      + "Repaying (an LP loan too), taking an LP position back, cashing out, rolling a loan over at the same size (an LP loan to one no larger), leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools and rating gage are not limited, nor are actions in an asset other than USDG.");
+      + "Repaying (an LP loan too), taking an LP position back, cashing out, rolling a loan over at the same size (an LP loan to one no larger), leaving a loan to roll by itself or ending that, withdrawing, unparking, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting, claiming an LP vault's bonus or sGAGE, wrapping or unwrapping Fables receipts, a curator's opening an LP vault or changing its pools, creating or managing a partner vault and rating gage are not limited, nor are actions in an asset other than USDG. A partner vault's fee recipient stays this wallet while any limit is on, unless its owner names another (GAGE_ALLOW_FEE_RECIPIENT).");
   });
 
   it("say what each limit is and what is left of it, as raw USDG", async () => {
@@ -232,9 +272,9 @@ describe("Valet's spend limits (D297)", () => {
       deposit: { perAction: "100000000", per24Hours: "250000000", used: "40000000", left: "210000000" },
       notLimited: [
         "reclaim", "cash_out", "roll (a loan of the same size)", "auto_roll", "cancel_auto_roll", "earn_redeem", "cancel", "collect", "feedback",
-        "lp_repay", "lp_roll (to a loan no larger)", "lp_return_position", "lp_collect", "lp_withdraw", "lp_redeem", "lp_claim_bonus", "lp_wrap", "lp_unwrap",
+        "lp_repay", "lp_roll (to a loan no larger)", "lp_return_position", "lp_collect", "lp_withdraw", "lp_redeem", "lp_claim_bonus", "lp_claim_rewards", "lp_wrap", "lp_unwrap",
         "lp_create_vault", "lp_vault_add_pool", "lp_vault_remove_pool", "unpark", "rehypo_exit_now", "earn_exit_now", "earn_exit_list", "earn_exit_cancel",
-        "earn_exit_collect", "actions in an asset other than USDG",
+        "earn_exit_collect", "create_vault", "vault_manage (a fee recipient other than this wallet is refused: GAGE_ALLOW_FEE_RECIPIENT)", "actions in an asset other than USDG",
       ],
     });
     expect(limitsOf({ borrow: { each: null, day: null }, deposit: { each: 5n, day: null } }, ledger, USDG).borrow).toEqual({ perAction: null, per24Hours: null, used: "0", left: null });

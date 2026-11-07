@@ -9,7 +9,7 @@
 import { existsSync } from "node:fs";
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, erc20Abi, getAddress, type Address, type Hex, type Log } from "viem";
 import { describe, expect, it } from "vitest";
-import { fablesHookAbi, fablesWrapperAbi, lpCoreAbi, lpVaultAbi, lpVaultFactoryAbi, positionManagerAbi } from "../src/abi.js";
+import { fablesHookAbi, fablesWrapperAbi, lpCoreAbi, lpVaultAbi, lpCompanionAbi, lpVaultFactoryAbi, positionManagerAbi } from "../src/abi.js";
 import type { Call, Chain, FablesReceipts, LpLoan } from "../src/chain.js";
 import { gageFrom } from "../src/client.js";
 import { parseDeployment, parseLpLane } from "../src/deployment.js";
@@ -27,7 +27,7 @@ import type { View } from "../src/plans.js";
 import { gageTools } from "../src/tools.js";
 import {
   A, ctx, FACTORY_VAULT, LP_CURATOR, POOL, LP_FACTORY, lpStockManifest, NVDA, NVDA_POOL, SPY, SPY_POOL, FABLES_ADAPTER, FABLES_HOOK, FABLES_KEY, FABLES_POOL, FABLES_RANGE, FABLES_WRAPPER, fakeChain, fakeSigner, fakeUpstream, LP_CORE, LP_ESCROW, LP_FACTS, LP_PRICE, LP_REG,
-  LP_VAULT, LP_VAULT_STATE, lpFablesManifest, lpFormatsManifest, lpLoan, lpManifest, lpQuoteRoute, manifest,
+  LP_BRIDGE, LP_COMPANION, LP_RESERVE_STATE, LP_RESERVE_TOKEN, LP_RESERVE_VAULT_STATE, LP_VAULT, LP_VAULT_STATE, lpFablesManifest, lpFormatsManifest, lpLoan, lpManifest, lpQuoteRoute, lpRewardsManifest, manifest,
   NOW, OTHER, RAM, RAMSES_ADAPTER, RAMSES_FACTORY, RAMSES_NFPM, RAMSES_POOL, STATE_VIEW, SUSHI_ADAPTER, SUSHI_FACTORY, SUSHI_NFPM, SUSHI_POOL, UNI_ADAPTER, UNI_FACTORY, UNI_NFPM,
   UNI_POOL, USDG, V4_ADAPTER, V4_POOL, V4_POOL_ID, V4_POOL_MANAGER, V4_POSM, WALLET, WETH,
 } from "../src/testing.js";
@@ -67,19 +67,25 @@ describe("the LP lane in a deployment", () => {
     const testnetLane = parseDeployment(TESTNET_MANIFEST).lpLane;
     if (TESTNET_LP) expect(testnetLane!.pools.map((p) => [p.native, BigInt(p.token0) > BigInt(p.token1)])).toEqual([[false, false], [true, true], [true, true]]);
     else expect(testnetLane).toBeNull();
-    // Mainnet's lane (r13, deployed 4 November 2026), public since the founders' go-live (5 November 2026): its ten pools,
-    // the four WETH/USDG v3-style ones, the native v4 and Fables ETH/USDG pools, and the four stock pools; no vault of its
+    // Mainnet's lane (r13, deployed 4 November 2026), public since the founders' go-live (5 November 2026): its twelve pools,
+    // the six WETH/USDG v3-style ones (Ouro v3's two since 6 November 2026, D450, at the list's end), the native v4 and Fables ETH/USDG pools, and the four stock pools; no vault of its
     // own, every vault a curator's through its factory (D319).
     const mainnetLane = (MAINNET_MANIFEST as unknown as { lpLane?: { public?: boolean } }).lpLane;
     expect(mainnetLane?.public).toBe(true);
     const lane = parseDeployment(MAINNET_MANIFEST).lpLane!;
-    expect(lane.adapters.map((a) => a.kind)).toEqual(["uniswap-v3", "ramses-v3", "uniswap-v3", "uniswap-v4", "fables"]);
+    expect(lane.adapters.map((a) => a.kind)).toEqual(["uniswap-v3", "ramses-v3", "uniswap-v3", "uniswap-v4", "fables", "uniswap-v3"]);
     expect(lane.pools.map((p) => [p.name, p.native])).toEqual([
       ["Ramses WETH/USDG", false], ["Uniswap v3 WETH/USDG 0.05%", false], ["Uniswap v3 WETH/USDG 0.01%", false], ["SushiSwap v3 WETH/USDG 0.05%", false],
       ["Uniswap v4 ETH/USDG 0.05%", true], ["Fables ETH/USDG", true],
       ["Uniswap v3 NVDA/USDG 0.05%", false], ["Uniswap v4 SPY/USDG 0.3%", false], ["Uniswap v3 GLD/USDG 0.3%", false], ["Uniswap v3 GLD/USDG 0.05%", false],
+      ["Ouro v3 WETH/USDG 0.3%", false], ["Ouro v3 WETH/USDG 1%", false],
     ]);
-    expect([lane.vaults, lane.vaultFactory]).toEqual([[], getAddress("0xDDd6afeA325F20Bba4Df0A5a7DB307524bbcbF77")]);
+    // Moved to reserve vaults on 7 November 2026 (D454): the new factory and the bridge, the first factory retired and its one
+    // vault, RWA LP, named.
+    expect([lane.vaults, lane.vaultFactory, lane.retiredVaultFactories, lane.rewardsBridge]).toEqual([
+      [{ address: getAddress("0x591c09B854cd50c660c399A37d4E524f4dCc6F34"), name: "RWA LP" }], getAddress("0xe40737DdbeaeaA7d8d7cF5Af2BB62e8dB5aa40Ab"),
+      [getAddress("0xDDd6afeA325F20Bba4Df0A5a7DB307524bbcbF77")], getAddress("0xF25BFD4DA8451B1220AF7A49aaB24E1Cf72593B7"),
+    ]);
   });
 
   it("is refused when it cannot be read, hidden or not", () => {
@@ -168,6 +174,11 @@ describe("the LP lane in a deployment", () => {
       { ...lane, executors: [lane.executors[0]!, { address: A(0x132), token: A(0x133), kind: "v4-one-pool", pools: [A(0x999)], poolId: V4_POOL_ID }] },
       { ...lane, executors: [lane.executors[0]!, { address: A(0x132), token: A(0x133), kind: "v4-one-pool", pools: [V4_POOL] }] },
       { ...lane, executors: [{ ...lane.executors[0]!, poolId: V4_POOL_ID }] },
+      // D454: the rewards bridge, and older factories kept named.
+      { ...lane, rewardsBridge: LP_BRIDGE }, { ...lane, rewardsBridge: A(0) }, { ...lane, rewardsBridge: "0x12" }, { ...lane, rewardsBridge: LP_CORE },
+      { ...lane, retiredVaultFactories: [A(0x153)] }, { ...lane, retiredVaultFactories: [] }, { ...lane, retiredVaultFactories: "none" }, { ...lane, retiredVaultFactories: [A(0)] },
+      { ...lane, retiredVaultFactories: [LP_VAULT] }, { ...lane, retiredVaultFactories: [A(0x153), A(0x153)] }, { ...lane, vaultFactory: A(0x153), retiredVaultFactories: [A(0x153)] },
+      { ...lane, rewardsBridge: A(0x153), retiredVaultFactories: [A(0x153)] },
     ];
     for (const [n, v] of variants.entries()) {
       const m = { ...manifest(), lpLane: v };
@@ -192,8 +203,10 @@ describe("the LP lane in a deployment", () => {
     // Opening a vault, only where the lane names its factory (D318).
     expect(actionsOn(parseDeployment(lpStockManifest())).filter((a) => a.startsWith("lp_"))).toEqual([...LP, "lp_create_vault", ...CURATE]);
     expect(actionsOn(parseDeployment(lpManifest({ public: false }))).filter((a) => a.startsWith("lp_"))).toEqual([]);
-    // Mainnet's public lane names a Fables adapter and its vault factory: every LP action.
-    expect(actionsOn(parseDeployment(MAINNET_MANIFEST)).filter((a) => a.startsWith("lp_"))).toEqual([...LP, "lp_wrap", "lp_unwrap", "lp_create_vault", ...CURATE]);
+    // Mainnet's public lane names a Fables adapter, its vault factory and, since its switch (D454), its rewards bridge: every LP
+    // action, the sGAGE claim included.
+    expect(actionsOn(parseDeployment(MAINNET_MANIFEST)).filter((a) => a.startsWith("lp_"))).toEqual([...LP.slice(0, 8), "lp_claim_rewards", ...LP.slice(8),
+      "lp_wrap", "lp_unwrap", "lp_create_vault", ...CURATE]);
   });
 });
 
@@ -345,6 +358,16 @@ describe("a wallet's SushiSwap v3 and Uniswap v4 positions", () => {
     expect(c.asked.owners[0]![1][0]).toBe(105n);
     expect(r.positions.filter((p) => p.kind === "uniswap-v4").map((p) => p.tokenId).slice(0, 2)).toEqual(["104", "103"]);
     expect(r.note).toContain("Only the newest 100 positions of each position manager were read (uniswap-v4).");
+  });
+
+  it("judges a running loan's end by the chain's clock, not the machine's", async () => {
+    const c = chain({
+      head: () => Promise.resolve({ number: 1n, timestamp: NOW - 100 }),
+      lpNextLoanId: () => Promise.resolve(2n),
+      lpLoans: (_core: Address, ids: readonly bigint[]) => Promise.resolve(ids.map((id) => lpLoan({ id, state: 1, end: NOW - 50 }))),
+    });
+    const r = await lpLoans(ctx({ d: fd(), chain: c }), WALLET, actionsOn(fd()));
+    expect(r.loans[0]!.actions.join(" ")).toMatch(/lp_repay/);
   });
 
   it("values a running v4 loan's position at its pool's price by its id, and leaves an unlisted v4 pool's unread", async () => {
@@ -511,6 +534,10 @@ describe("a wallet's LP loans and holdings", () => {
     });
     // The lane's pools are parked from too (D334), so park's rule follows the lane's.
     expect(caps.rules).toEqual([...RULES, LP_RULE, PARK_RULE]);
+    // A Gage serving fewer actions says only the rules of those: the lane's contracts stay, for the reads it still answers.
+    const fewer = await capabilities(lc(), ["borrow", "collect"]);
+    expect(fewer.rules).toEqual(RULES);
+    expect(fewer.lpLane).toBeDefined();
     expect(LP_RULE).toMatch(/There is no liquidation: the loan is never closed early because a price moves/);
     expect(caps.actions).toContain("lp_borrow");
     const plainCaps = await capabilities(ctx());
@@ -780,10 +807,10 @@ describe("a loan against a SushiSwap v3 or Uniswap v4 position", () => {
       ["Uniswap v3 WETH/USDG 0.05%"], ["Ramses WETH/USDG"], ["SushiSwap WETH/USDG 0.05%"], ["ETH / USDG v4 0.05%", V4_POOL_ID, true],
     ]);
     expect(caps.lpLane!.adapters.map((a) => a.kind)).toEqual(["uniswap-v3", "ramses-v3", "uniswap-v3", "uniswap-v4"]);
-    expect(LP_RULE).toContain("an ETH/USDG or stock/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables, in a pool the lane lists");
+    expect(LP_RULE).toContain("an ETH/USDG or stock/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables, in a pool the lane lists");
     expect(LP_RULE).toContain("rolled into a new loan on the same position (lp_roll)");
     const tools = gageTools(gageFrom(ctx({ d: fd() })));
-    expect(tools.find((t) => t.name === "gage_lp_positions")!.description).toContain("on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables");
+    expect(tools.find((t) => t.name === "gage_lp_positions")!.description).toContain("on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables");
     expect(tools.find((t) => t.name === "gage_prepare_lp_borrow")!.description).toContain("A Uniswap v4 position leaves any subscription it has");
   });
 });
@@ -800,6 +827,11 @@ describe("rolling an LP loan", () => {
     lpLoans: (_c: Address, ids: readonly bigint[]) => Promise.resolve(ids.map((id) => lpLoan({ id, ...over }))), ...chain,
   });
   const rolling = { action: "lp_roll" as const, wallet: WALLET, loanId: "1", term: 604_800, maxCostBps: 60 };
+
+  it("judges the loan's end by the chain's clock, not the machine's", async () => {
+    const chain = running({ end: NOW - 50 }, { head: () => Promise.resolve({ number: 1n, timestamp: NOW - 100 }) });
+    await expect(plan(lc({ chain, rates: rates() }), rolling)).resolves.toMatchObject({ view: { action: "lp_roll" } });
+  });
 
   it("asks for the loan's roll, approves exactly what the wallet pays, and rolls on the same position", async () => {
     const r = rates();
@@ -1058,12 +1090,12 @@ describe("an LP vault's deposits, withdrawals and bonuses", () => {
     const short = held(5n * 10n ** 15n, { freeCash: 2_000_000_000n });
     const cut = await plan(lc({ chain: short }), redeeming);
     // 2,000 USDG of free cash at the vault's price, its virtual share and asset included: 2·10^15 shares exactly, the
-    // vault's own maxRedeem.
-    expect(cut.view).toMatchObject({ shares: "2000000000000000", assets: "2000000000", all: false });
+    // vault's own maxRedeem, less a basis point of it while loans run (the free cash short of the vault's 200,000 USDG).
+    expect(cut.view).toMatchObject({ shares: "1999800000000000", assets: "1999800000", all: false });
     const asked: [Address, Address][] = [];
     const told = held(5n * 10n ** 15n, { freeCash: 2_000_000_000n });
     told.lpMaxRedeem = (vault: Address, owner: Address) => { asked.push([vault, owner]); return Promise.resolve(1_500_000_000_000_000n); };
-    expect((await plan(lc({ chain: told }), redeeming)).view).toMatchObject({ shares: "1500000000000000", assets: "1500000000", all: false });
+    expect((await plan(lc({ chain: told }), redeeming)).view).toMatchObject({ shares: "1499850000000000", assets: "1499850000", all: false });
     expect(asked.map(([v, o]) => [v.toLowerCase(), o.toLowerCase()])).toEqual([[LP_VAULT.toLowerCase(), WALLET.toLowerCase()]]);
     expect(cut.notes).toEqual(["The rest stays in the vault until it has the free cash to pay it."]);
     expect(await refusal(plan(lc({ chain: short }), { ...redeeming, shares: "3000000000000000" }))).toMatchObject({ code: "INSUFFICIENT_LIQUIDITY", details: { availableNow: "2000000000" } });
@@ -1071,6 +1103,36 @@ describe("an LP vault's deposits, withdrawals and bonuses", () => {
     expect(await code(plan(lc({ chain: held(0n) }), redeeming))).toBe("EXCEEDS_BALANCE");
     expect(await code(plan(lc({ chain: held(5n) }), { ...redeeming, shares: "6" }))).toBe("EXCEEDS_BALANCE");
     expect(await code(plan(lc({ chain: held(5n) }), redeeming))).toBe("TOO_SMALL");
+  });
+
+  // LPVault accrues each running loan's return into its share price by the second, while its free cash stands still: a
+  // redemption sized to the free cash's last unit (the vault's own maxRedeem) passes only in the second it was read.
+  it("keeps a basis point of the free cash when it sizes everything while a loan runs, so the redemption still pays once sent", async () => {
+    // 10,000 USDG free and a 90,000 USDG loan returning 900 over 7 days, an hour in; 12-decimal shares (10^6 virtual).
+    const FREE = 10_000_000_000n, PRINCIPAL = 90_000_000_000n, NET = 900_000_000n, SPAN = 604_800n, SUPPLY = 100_000_000_000n * 10n ** 6n;
+    const totalAssets = (seconds: bigint) => FREE + PRINCIPAL + (NET * (3_600n + seconds)) / SPAN;
+    const worth = (shares: bigint, seconds = 0n) => (shares * (totalAssets(seconds) + 1n)) / (SUPPLY + 10n ** 6n);
+    // What LPVault._payOut takes `seconds` after the plan read the vault: no more than its free cash (InsufficientLiquidity).
+    const pays = (shares: bigint, seconds: bigint) => worth(shares, seconds) <= FREE;
+    const running = (holding: bigint) => {
+      const chain = held(holding, { freeCash: FREE, totalAssets: totalAssets(0n), totalShares: SUPPLY, outstandingPrincipal: PRINCIPAL, openLoans: 1 });
+      chain.lpPreviewRedeem = (_v: Address, shares: bigint) => Promise.resolve(worth(shares));
+      return chain;
+    };
+    // A holder of all but a USDG's worth of the shares: everything is cut to what the free cash pays.
+    const big = running(SUPPLY - 10n ** 12n), exact = await big.lpMaxRedeem(LP_VAULT, WALLET);
+    expect([pays(exact, 0n), pays(exact, 1n)]).toEqual([true, false]);
+    const p = await plan(lc({ chain: big }), redeeming), shares = BigInt((p.view as { shares: string }).shares);
+    expect(shares).toBe(exact - exact / 10_000n);
+    for (const seconds of [0n, 1n, 60n, 3_600n]) expect(pays(shares, seconds), `${seconds} seconds later`).toBe(true);
+    expect(p.view).toMatchObject({ all: false, assets: String(worth(shares)) });
+    expect(p.notes).toEqual(["The rest stays in the vault until it has the free cash to pay it."]);
+    // One whose holding the free cash pays now by less than that basis point is held to it too.
+    const edge = SUPPLY * (FREE - 1_000n) / (totalAssets(0n) + 1n);
+    expect([pays(edge, 0n), pays(edge, 60n)]).toEqual([true, false]);
+    const q = await plan(lc({ chain: running(edge) }), redeeming), cut = BigInt((q.view as { shares: string }).shares);
+    expect(cut).toBe(edge - edge / 10_000n);
+    expect(pays(cut, 3_600n)).toBe(true);
   });
 
   const claiming = { action: "lp_claim_bonus" as const, wallet: WALLET, vault: LP_VAULT };
@@ -1107,7 +1169,7 @@ describe("the LP lane's tools", () => {
     ]);
     expect(names(tools).filter((n) => n.startsWith("gage_prepare_lp_"))).toHaveLength(11);
     // Opening a vault, where the lane names its vault factory (D318).
-    expect(names(gageTools(gageFrom(ctx({ d: parseDeployment(lpStockManifest()) })), { signer: fakeSigner() })).filter((n) => n.includes("create_vault")))
+    expect(names(gageTools(gageFrom(ctx({ d: parseDeployment(lpStockManifest()) })), { signer: fakeSigner() })).filter((n) => n.includes("lp_create_vault")))
       .toEqual(["gage_prepare_lp_create_vault", "gage_lp_create_vault"]);
     // Wrapping Fables receipts and unwrapping a position, where the lane names a Fables adapter.
     expect(names(gageTools(gageFrom(ctx({ d: parseDeployment(lpFablesManifest()) })), { signer: fakeSigner() })).filter((n) => /_lp_(un)?wrap$/.test(n)))
@@ -1277,5 +1339,218 @@ describe("curators' vaults, mandates and stock LPs (D318)", () => {
       expect(BigInt(p.valueUSDG!)).toBe(valueInUsdg(USDG, usdgFirst ? USDG : SPY, usdgFirst ? NVDA : USDG, BigInt(p.amount0 ?? "0"), BigInt(p.amount1 ?? "0"), usdgFirst ? LP_PRICE.sqrtPriceX96 : POOL.sqrtPriceX96));
       expect(BigInt(p.valueUSDG!) > 0n).toBe(true);
     }
+  });
+});
+
+// Reserve vaults (D454; docs/api.md "LP lane", Reserve vaults): built, not deployed. An LPVault reads and acts as before.
+describe("reserve vaults (D454)", () => {
+  const rc = (over: { chain?: Chain; indexer?: Upstream } = {}) => ctx({ d: parseDeployment(lpRewardsManifest()), ...over });
+  /** The fixture's vault as a reserve vault: its companion answers, 10,000 USDG of its 200,000 is cash. */
+  const reserve = (over: Partial<typeof LP_VAULT_STATE> = {}, chain: Record<string, unknown> = {}) => fakeChain({
+    lpVault: () => Promise.resolve({ ...LP_RESERVE_VAULT_STATE, ...over }), lpCompanion: () => Promise.resolve(LP_COMPANION), ...chain,
+  });
+  const failing = () => Promise.reject(new Error("execution reverted"));
+
+  describe("the lane's rewards bridge and older factories", () => {
+    it("reads them from the release, none where it names none", () => {
+      expect(parseDeployment(lpRewardsManifest()).lpLane).toMatchObject({ rewardsBridge: getAddress(LP_BRIDGE), retiredVaultFactories: [] });
+      expect(d().lpLane).toMatchObject({ rewardsBridge: null, retiredVaultFactories: [] });
+      const m = lpManifest();
+      expect(parseDeployment({ ...m, lpLane: { ...m.lpLane, retiredVaultFactories: [A(0x153)] } }).lpLane!.retiredVaultFactories).toEqual([getAddress(A(0x153))]);
+    });
+
+    it("serves the sGAGE claim only where the release names the bridge, so no deployment's catalogue changes before then", () => {
+      expect(actionsOn(parseDeployment(lpRewardsManifest()))).toContain("lp_claim_rewards");
+      expect(actionsOn(d())).not.toContain("lp_claim_rewards");
+      // Mainnet's release names its bridge since the switch of 7 November 2026 (D454).
+      expect(actionsOn(parseDeployment(MAINNET_MANIFEST))).toContain("lp_claim_rewards");
+      const names = (c: ReturnType<typeof ctx>) => gageTools(gageFrom(c), { signer: fakeSigner() }).map((t) => t.name).filter((n) => n.includes("claim_rewards"));
+      expect(names(rc())).toEqual(["gage_prepare_lp_claim_rewards", "gage_lp_claim_rewards"]);
+      expect(names(lc())).toEqual([]);
+    });
+  });
+
+  describe("what lpVaults reports", () => {
+    it("reads an LPVault as before: no reserve, its figures and its note unchanged", async () => {
+      const r = await lpVaults(lc());
+      expect(r.vaults[0]).toMatchObject({ totalAssetsUSDG: "200000000000", freeCashUSDG: "200000000000", usdgPerShare: "1000000", takesDeposits: true, paysOut: true });
+      expect(r.vaults[0]).not.toHaveProperty("reserve");
+      expect(r.note).not.toContain("reserve");
+    });
+
+    it("reports a reserve vault's liquidity, reserve and minimum cost, raw, beside its free cash", async () => {
+      const r = await lpVaults(lc({ chain: reserve() }));
+      expect(r.vaults[0]).toMatchObject({
+        freeCashUSDG: "10000000000", totalAssetsUSDG: "200000000000", takesDeposits: true, paysOut: true,
+        reserve: {
+          companion: LP_COMPANION, token: LP_RESERVE_TOKEN, shares: "148000000000000000000000", value: "150000000000", payable: "150000000000", freeLiquidity: "160000000000",
+          bufferBps: 500, minCostBpsPerYear: 400, closed: false, rewardsAccounted: "7000000000000000000",
+        },
+      });
+      expect(r.note).toContain("reserve.freeLiquidity");
+      expect(r.note).toContain("lp_claim_rewards");
+      expect(r.note).not.toMatch(/\b(yield|interest|stake|staking|APY)\b/i);
+    });
+
+    it("keeps a reserve vault listed when its companion's reads fail, those figures null", async () => {
+      const unread = { ...LP_RESERVE_STATE, token: null, shares: null, value: null, payable: null, freeLiquidity: null, bufferBps: null, minCostBpsPerYear: null, closed: null, rewardsAccounted: null };
+      const r = await lpVaults(lc({ chain: reserve({ reserve: unread }) }));
+      expect(r.vaults[0]).toMatchObject({
+        vault: getAddress(LP_VAULT), freeCashUSDG: "10000000000",
+        reserve: { companion: LP_COMPANION, token: null, shares: null, value: null, payable: null, freeLiquidity: null, bufferBps: null, minCostBpsPerYear: null, closed: null, rewardsAccounted: null },
+      });
+    });
+
+    it("keeps every vault listed while a reserve's conversion fails, where a reserve vault's totalAssets and previews revert", async () => {
+      const chain = fakeChain({
+        lpFactoryVaults: () => Promise.resolve([{ address: FACTORY_VAULT, name: "Reserve LP" }]),
+        lpVault: (v: Address) => Promise.resolve(v.toLowerCase() === FACTORY_VAULT ? { ...LP_RESERVE_VAULT_STATE, totalAssets: null, reserve: { ...LP_RESERVE_STATE, value: null, payable: null } } : LP_VAULT_STATE),
+        lpPreviewRedeem: (v: Address, shares: bigint) => (v.toLowerCase() === FACTORY_VAULT ? failing() : Promise.resolve(shares / 10n ** 6n)),
+      });
+      const r = await lpVaults(ctx({ d: parseDeployment(lpStockManifest()), chain }));
+      expect(r.vaults.map((v) => [v.name, v.totalAssetsUSDG, v.usdgPerShare, v.takesDeposits, v.paysOut])).toEqual([
+        ["WETH/USDG LP lane", "200000000000", "1000000", true, true], ["Reserve LP", null, null, false, false],
+      ]);
+    });
+
+    it("still fails where an LPVault's preview fails: it never reverts, so that is the chain's failure", async () => {
+      await expect(lpVaults(lc({ chain: fakeChain({ lpPreviewRedeem: failing }) }))).rejects.toThrow("execution reverted");
+    });
+  });
+
+  describe("a wallet's portfolio", () => {
+    const indexer = fakeUpstream({ "/v2/positions?": { items: [], nextCursor: null }, "/intent/partners/vaults?": { items: [], nextCursor: null } });
+
+    it("leaves an LPVault's holding as it reads, with no sGAGE and no word of it", async () => {
+      const p = await portfolio(lc({ chain: fakeChain({ lpShares: () => Promise.resolve(5n * 10n ** 15n) }), indexer }), WALLET);
+      expect(p.lp?.vaults).toEqual([{ vault: getAddress(LP_VAULT), name: "WETH/USDG LP lane", shares: "5000000000000000", shareDecimals: 12, valueUSDG: "5000000000", bonuses: [] }]);
+      expect(p.note).not.toContain("lp_claim_rewards");
+    });
+
+    it("adds a reserve vault's sGAGE to claim, read from its companion for the wallet", async () => {
+      const asked: [Address, Address][] = [];
+      const chain = reserve({}, {
+        lpShares: () => Promise.resolve(5n * 10n ** 15n), lpRewardClaimable: (companion: Address, wallet: Address) => { asked.push([companion, wallet]); return Promise.resolve(2n * 10n ** 18n); },
+      });
+      const p = await portfolio(lc({ chain, indexer }), WALLET);
+      expect(asked).toEqual([[LP_COMPANION, WALLET]]);
+      expect(p.lp?.vaults).toMatchObject([{ shares: "5000000000000000", valueUSDG: "5000000000", sgageClaimable: "2000000000000000000" }]);
+      expect(p.note).toContain("lp_claim_rewards");
+    });
+
+    it("keeps a vault held while sGAGE waits for a wallet that no longer holds shares, and leaves out one with neither", async () => {
+      const claim = (raw: bigint) => reserve({}, { lpRewardClaimable: () => Promise.resolve(raw) });
+      expect((await portfolio(lc({ chain: claim(1n), indexer }), WALLET)).lp?.vaults).toMatchObject([{ shares: "0", valueUSDG: "0", sgageClaimable: "1" }]);
+      expect((await portfolio(lc({ chain: claim(0n), indexer }), WALLET)).lp?.vaults).toEqual([]);
+    });
+
+    it("answers a holding's unread parts as null rather than failing the portfolio: a reserve vault's preview or its sGAGE", async () => {
+      const chain = reserve({}, { lpShares: () => Promise.resolve(5n * 10n ** 15n), lpPreviewRedeem: failing, lpRewardClaimable: failing });
+      expect((await portfolio(lc({ chain, indexer }), WALLET)).lp?.vaults).toMatchObject([{ shares: "5000000000000000", valueUSDG: null, sgageClaimable: null }]);
+    });
+  });
+
+  describe("a redemption", () => {
+    const redeeming = { action: "lp_redeem" as const, wallet: WALLET, vault: LP_VAULT };
+    /** A wallet with 50,000 USDG of shares in a vault with 10,000 USDG of free cash, whose maxRedeem says 40,000 USDG's. */
+    const HELD = 5n * 10n ** 16n, MOST = 4n * 10n ** 16n;
+    const holding = (most: bigint = MOST, chain: Record<string, unknown> = {}) => reserve({}, { lpShares: () => Promise.resolve(HELD), lpMaxRedeem: () => Promise.resolve(most), ...chain });
+
+    it("pays above the free cash, up to maxRedeem", async () => {
+      const p = await plan(lc({ chain: holding() }), { ...redeeming, shares: String(3n * 10n ** 16n) });
+      expect(p.view).toMatchObject({ shares: "30000000000000000", assets: "30000000000", minAssets: "29850000000", all: false });
+      expect(decodeFunctionData({ abi: lpVaultAbi, data: (await p.steps[0]!.build()).data }))
+        .toMatchObject({ functionName: "redeem", args: [3n * 10n ** 16n, getAddress(WALLET), getAddress(WALLET), 29_850_000_000n] });
+      expect((await plan(lc({ chain: holding() }), { ...redeeming, shares: String(MOST) })).view).toMatchObject({ shares: String(MOST), assets: "40000000000" });
+    });
+
+    it("refuses shares named above maxRedeem, saying what the vault can pay", async () => {
+      expect(await refusal(plan(lc({ chain: holding() }), { ...redeeming, shares: String(MOST + 1n) })))
+        .toMatchObject({ code: "INSUFFICIENT_LIQUIDITY", message: "The vault can pay 40,000.00 USDG now; redeem fewer shares", details: { availableNow: "40000000000" } });
+    });
+
+    it("cuts everything to a basis point under maxRedeem where the vault's liquidity limits it, as a share's value grows while the transaction is on its way", async () => {
+      const p = await plan(lc({ chain: holding() }), redeeming);
+      expect(p.view).toMatchObject({ shares: "39996000000000000", assets: "39996000000", all: false });
+      expect(p.summary.rows[0]).toEqual({ label: "You redeem", value: "39,996 shares (all the vault can pay now)" });
+      expect(p.notes).toEqual(["The rest stays in the vault until its cash and reserve can pay it."]);
+    });
+
+    it("redeems every share, uncut, where maxRedeem covers the holding", async () => {
+      const p = await plan(lc({ chain: holding(HELD) }), redeeming);
+      expect(p.view).toMatchObject({ shares: String(HELD), assets: "50000000000", all: true });
+      expect(p.notes).toEqual([]);
+    });
+
+    it("refuses when maxRedeem is 0, as it is while the reserve cannot be read, without asking a preview that would revert", async () => {
+      const chain = holding(0n, { lpPreviewRedeem: failing });
+      expect(await refusal(plan(lc({ chain }), redeeming))).toMatchObject({ code: "INSUFFICIENT_LIQUIDITY", details: { availableNow: "0" } });
+      expect(await refusal(plan(lc({ chain }), { ...redeeming, shares: "1" }))).toMatchObject({ code: "INSUFFICIENT_LIQUIDITY", details: { availableNow: "0" } });
+    });
+
+    it("is refused while impaired or for more than the wallet holds", async () => {
+      expect(await code(plan(lc({ chain: reserve({ impaired: true }, { lpShares: () => Promise.resolve(HELD) }) }), redeeming))).toBe("VAULT_IMPAIRED");
+      expect(await code(plan(lc({ chain: holding() }), { ...redeeming, shares: String(HELD + 1n) }))).toBe("EXCEEDS_BALANCE");
+    });
+
+    it("leaves an LPVault on its free cash: refused above it, with no maxRedeem asked", async () => {
+      const asked: Address[] = [];
+      const chain = fakeChain({
+        lpVault: () => Promise.resolve({ ...LP_VAULT_STATE, freeCash: 2_000_000_000n }), lpShares: () => Promise.resolve(5n * 10n ** 15n),
+        lpMaxRedeem: (v: Address) => { asked.push(v); return Promise.resolve(5n * 10n ** 15n); },
+      });
+      expect(await refusal(plan(lc({ chain }), { ...redeeming, shares: "3000000000000000" }))).toMatchObject({ code: "INSUFFICIENT_LIQUIDITY", details: { availableNow: "2000000000" } });
+      expect(asked).toEqual([]);
+    });
+  });
+
+  describe("a deposit", () => {
+    const depositing = { action: "lp_deposit" as const, wallet: WALLET, vault: LP_VAULT, amount: "1000000000" };
+    const row = async (chain: Chain, label: string) => (await plan(lc({ chain }), depositing)).summary.rows.find((r) => r.label === label)?.value;
+    const removed = { lpVaultsAllowed: () => Promise.resolve([false]) };
+
+    it("says a reserve vault's cash and reserve pay it out, and an LPVault's free cash still", async () => {
+      expect(await row(reserve(), "Taking it out")).toBe("Any time the vault is not impaired, up to what its cash and its reserve can pay");
+      expect(await row(fakeChain(), "Taking it out")).toBe("Any time the vault is not impaired, up to its free cash");
+      expect(await row(reserve(), "While it waits for a loan")).toContain("its reserve");
+      expect(await row(fakeChain(), "While it waits for a loan")).toBeUndefined();
+    });
+
+    it("no longer says cash would sit idle on a reserve vault the registry removed, still refused; an LPVault's words stay", async () => {
+      const held = await refusal(plan(lc({ chain: reserve({}, removed) }), depositing));
+      expect(held).toMatchObject({ code: "VAULT_NOT_LENDING" });
+      expect(held!.message).not.toContain("idle");
+      const old = await refusal(plan(lc({ chain: fakeChain(removed) }), depositing));
+      expect(old).toMatchObject({ code: "VAULT_NOT_LENDING", message: "gage's registry no longer lets this vault fund new loans: a deposit would sit idle. Its open loans run to their ends" });
+    });
+  });
+
+  describe("claiming a holder's sGAGE", () => {
+    const claiming = { action: "lp_claim_rewards" as const, wallet: WALLET, vault: LP_VAULT };
+    const owed = (raw: bigint) => reserve({}, { lpRewardClaimable: (_c: Address, _w: Address) => Promise.resolve(raw) });
+
+    it("calls the vault's companion for the wallet's own sGAGE, one step, moving no USDG", async () => {
+      const p = await plan(rc({ chain: owed(12n * 10n ** 18n + 5n * 10n ** 17n) }), claiming);
+      expect(p.view).toEqual({ action: "lp_claim_rewards", vault: getAddress(LP_VAULT), name: "WETH/USDG LP lane", companion: LP_COMPANION, amount: "12500000000000000000" });
+      expect(p.summary.title).toBe("Claim 12.5 sGAGE from WETH/USDG LP lane (" + `${getAddress(LP_VAULT).slice(0, 6)}…${getAddress(LP_VAULT).slice(-4)})`);
+      expect(p.summary.rows[0]).toEqual({ label: "You receive", value: "12.5 sGAGE" });
+      expect(p.steps.map((s) => [s.label, s.kind, s.final])).toEqual([["Claim 12.5 sGAGE", "action", true]]);
+      const tx = await p.steps[0]!.build();
+      expect([tx.to, tx.value]).toEqual([LP_COMPANION, 0n]);
+      expect(decodeFunctionData({ abi: lpCompanionAbi, data: tx.data })).toMatchObject({ functionName: "claimRewards" });
+      expect((await prepareNext(rc({ chain: owed(1n) }), claiming)).status).toBe("ready");
+      // A sliver under the last place shown reads in its own digits, never as none.
+      expect((await plan(rc({ chain: owed(1n) }), claiming)).steps[0]!.label).toBe("Claim 0.000000000000000001 sGAGE");
+    });
+
+    it("refuses on an LPVault, which has no companion and pays no sGAGE", async () => {
+      expect(await refusal(plan(rc(), claiming))).toMatchObject({ code: "NOT_RESERVE_VAULT", retryable: false });
+      expect(await code(prepareNext(rc(), claiming))).toBe("NOT_RESERVE_VAULT");
+    });
+
+    it("refuses with nothing to claim, and for a vault the lane does not name", async () => {
+      expect(await refusal(plan(rc({ chain: owed(0n) }), claiming))).toMatchObject({ code: "NOTHING_TO_CLAIM", retryable: false });
+      expect(await code(plan(rc({ chain: owed(1n) }), { ...claiming, vault: A(0x777) }))).toBe("UNKNOWN_VAULT");
+    });
   });
 });

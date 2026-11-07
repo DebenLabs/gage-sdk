@@ -12,6 +12,7 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, describe, expect, it } from "vitest";
 import { MAINNET_LIMITS } from "../src/limits.js";
+import { VERSION } from "../src/server.js";
 import { ensureKey, init, keyFile, readKey } from "../src/wallet.js";
 import { TESTNET_TOOLS } from "./testnet.js";
 
@@ -71,8 +72,8 @@ describe("Valet's wallet", () => {
     expect(lines.join("\n")).toContain("Funded from gage's testnet faucet: 0.02 ETH, USDG.");
     expect(lines.join("\n")).toContain("NVDAx (COOLDOWN)");
     // The server serves mainnet unless told otherwise (D311), so the testnet's next step names the testnet.
-    expect(lines.join("\n")).toContain("Claude Code: `claude mcp add gage -e GAGE_NETWORK=testnet -- npx -y gage-mcp`");
-    expect(lines.join("\n")).toContain("Codex: `codex mcp add gage --env GAGE_NETWORK=testnet -- npx -y gage-mcp`");
+    expect(lines.join("\n")).toContain(`Claude Code: \`claude mcp add gage -e GAGE_NETWORK=testnet -- npx -y gage-mcp@${VERSION}\``);
+    expect(lines.join("\n")).toContain(`Codex: \`codex mcp add gage --env GAGE_NETWORK=testnet -- npx -y gage-mcp@${VERSION}\``);
     expect(lines.join("\n")).not.toContain(key.slice(2));
     // Run again: the same wallet.
     const again: string[] = [];
@@ -92,8 +93,8 @@ describe("Valet's wallet", () => {
     expect(text).toContain(`Fund it with only what the agent may use: send USDG (or the lend asset a vault you will use takes), the tokens it may pledge, and a little ETH for gas, to ${made.address}.`);
     expect(text).toContain("Spend limits: it borrows at most 100 USDG a loan or loop and 250 USDG in any 24 hours, and deposits at most 100 USDG at a time and 250 USDG in any 24 hours.");
     expect(text).toContain("GAGE_MAX_BORROW_USDG, GAGE_MAX_BORROW_DAY_USDG, GAGE_MAX_DEPOSIT_USDG, GAGE_MAX_DEPOSIT_DAY_USDG");
-    expect(text).toContain("Claude Code: `claude mcp add gage -e GAGE_NETWORK=mainnet -- npx -y gage-mcp`");
-    expect(text).toContain("Codex: `codex mcp add gage --env GAGE_NETWORK=mainnet -- npx -y gage-mcp`");
+    expect(text).toContain(`Claude Code: \`claude mcp add gage -e GAGE_NETWORK=mainnet -- npx -y gage-mcp@${VERSION}\``);
+    expect(text).toContain(`Codex: \`codex mcp add gage --env GAGE_NETWORK=mainnet -- npx -y gage-mcp@${VERSION}\``);
     expect(text).not.toContain("faucet");
     expect(text).not.toContain(key.slice(2));
   });
@@ -169,10 +170,11 @@ describe("gage-mcp init, then gage-mcp", () => {
     // unpark and the park positions read join. NVDA's puts (5 November 2026): the put quote read and a prepare for each of
     // its five put actions join. The lane is public since the founders' go-live (5 November 2026): its four reads and a
     // prepare for each of its fourteen actions (Fables' wrap and unwrap, and a curator's vault through its factory, among
-    // them) make 54.
-    expect((await keyless.listTools()).tools).toHaveLength(54);
+    // them) make 54. Since the lane's move to reserve vaults (D454, 7 November 2026) it names its rewards bridge: the sGAGE
+    // claim's prepare joins.
+    expect((await keyless.listTools()).tools).toHaveLength(59);
     expect(keyless.getInstructions()).toContain("Robinhood Chain (4663)");
-    expect(keyless.getInstructions()).toContain("LP loans: gage_lp_positions lists a wallet's ETH/USDG or stock/USDG liquidity positions on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables");
+    expect(keyless.getInstructions()).toContain("LP loans: gage_lp_positions lists a wallet's ETH/USDG or stock/USDG liquidity positions on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables");
 
     const made = await run(process.execPath, ["--import", "tsx", cli, "init"], { cwd, env, encoding: "utf8", timeout: 30_000 });
     const wallet = privateKeyToAccount(readFileSync(keyFile(env.GAGE_HOME, 4663), "utf8").trim() as `0x${string}`).address;
@@ -182,14 +184,14 @@ describe("gage-mcp init, then gage-mcp", () => {
     const valet = await serve();
     // With a wallet, each of the exit desk's five tools also has its signing twin (r13, 4 November 2026), and so do park
     // and unpark, roll and auto_roll (r13's USDG router, 5 November 2026), NVDA's five put actions (its puts, the same
-    // day), and the LP lane's fourteen actions.
-    expect((await valet.listTools()).tools).toHaveLength(94);
+    // day), and the LP lane's fourteen actions, and its sGAGE claim since the move (D454).
+    expect((await valet.listTools()).tools).toHaveLength(102);
     expect(valet.getInstructions()).toContain(wallet);
     expect(valet.getInstructions()).toContain("it borrows at most 100 USDG a loan or loop and 250 USDG in any 24 hours");
     const owners = await serve({ GAGE_MAX_BORROW_USDG: "20", GAGE_MAX_DEPOSIT_DAY_USDG: "1000.5" });
     expect(owners.getInstructions()).toContain("it borrows at most 20 USDG a loan or loop and 250 USDG in any 24 hours, and deposits at most 100 USDG at a time and 1000.5 USDG in any 24 hours");
     const lifted = await serve({ GAGE_MAX_BORROW_USDG: "off", GAGE_MAX_BORROW_DAY_USDG: "off", GAGE_MAX_DEPOSIT_USDG: "off", GAGE_MAX_DEPOSIT_DAY_USDG: "off" });
-    expect((await lifted.listTools()).tools).toHaveLength(94);
+    expect((await lifted.listTools()).tools).toHaveLength(102);
     expect(lifted.getInstructions()).toContain("it borrows without a limit, and deposits without a limit");
   }, 90_000);
 

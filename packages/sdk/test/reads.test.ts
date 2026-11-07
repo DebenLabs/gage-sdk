@@ -141,6 +141,27 @@ describe("the tokens gage takes", () => {
   });
 });
 
+describe("buy-only vaults (D452): they fund no loan, so they are no token's lender", () => {
+  const row = { address: VAULT, creator: A(1), curator: A(1), core: CORE, categoryMask: 1, feeBps: 1000, maxLoanTerm: 604_800, assets: [NVDA], fundingEnabled: true };
+  const index = () => fakeUpstream({
+    "/v2/positions?": { items: [], nextCursor: null },
+    // The second buys running loans alone, for 21 days; the index marks it (D452) and still says funding is on.
+    "/intent/partners/vaults?": { items: [row, { ...row, address: A(0x72), maxLoanTerm: 1_814_400, buysOnly: true }], nextCursor: null },
+    "/intent/partners/vaults/": () => ({ status: 200, body: { pricing: { totalAssets: "1", totalSupply: "1", assetsPerShare: "1" }, liquidity: { free: "1" } } }),
+  });
+
+  it("leaves them out of how many vaults lend against a token, and of the terms a loan can be funded for", async () => {
+    const nvda = (await assets(ctx({ indexer: index() }))).assets.find((a) => a.token === NVDA)!;
+    expect(nvda.vaults).toBe(1);
+    expect(nvda.terms).toEqual([{ seconds: 604_800, days: 7 }]);
+  });
+
+  it("lists them among the Earn vaults as buying loans, not lending", async () => {
+    const rows = (await earnVaults(ctx({ indexer: index() }))).vaults;
+    expect(rows.map((v) => [v.vault, v.lends, "buysOnly" in v ? v.buysOnly : undefined])).toEqual([[VAULT, true, undefined], [A(0x72), false, true]]);
+  });
+});
+
 describe("a partner vault's short link (D290)", () => {
   const row = { address: VAULT, creator: A(1), curator: A(1), core: CORE, categoryMask: 1, feeBps: 1000, maxLoanTerm: 1_814_400, assets: [NVDA], fundingEnabled: true };
   const index = (links: unknown) => fakeUpstream({
@@ -157,6 +178,12 @@ describe("a partner vault's short link (D290)", () => {
     expect((await earnVaults(ctx({ indexer: index(table) }))).vaults.map((v) => v.link)).toEqual(["https://testnet.gage.cash/v/silicon", null]);
     expect((await earnVaults(ctx({ d: parseDeployment(mainnetManifest()), indexer: index(table) }))).vaults[0]!.link).toBe("https://gage.cash/v/silicon");
     expect((await portfolio(ctx({ indexer: index(table) }), WALLET)).earn.map((e) => e.link)).toEqual(["https://testnet.gage.cash/v/silicon", null]);
+  });
+
+  it("names each vault's manager, the address that runs it", async () => {
+    expect((await earnVaults(ctx({ indexer: index(table) }))).vaults.map((v) => v.manager)).toEqual([A(1), A(1)]);
+    // Anyone may create a vault and name it: a name is its manager's own text.
+    expect((await earnVaults(ctx({ indexer: index(table) }))).note).toMatch(/name is its manager's own text/);
   });
 
   it("is none while the index cannot say: a table not built yet, or an index without the route", async () => {

@@ -104,7 +104,7 @@ A quote against one LP position.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `adapter` | address | yes | The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's) |
+| `adapter` | address | yes | The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ouro v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's) |
 | `tokenId` | id (decimal string) | yes | The position's id: its NFT's token id at the adapter's position manager (gage_lp_positions) |
 | `wallet` | address | yes | The wallet that holds the position and will borrow: the quote is signed for it |
 | `term` | integer, positive | yes | Loan term in seconds, one of gage_capabilities lpLane.terms |
@@ -135,9 +135,38 @@ The calls that create a pool's vaults, from its curator.
 | `sides` | list of at most 2 | yes | What is counted in each token, one entry for each pool token gage lends: its largest loan, and the cash it keeps free |
 | `sides[].token` | string | yes | The pool token this side lends, as `pool` names it |
 | `sides[].maxLoan` | raw amount | yes | The most this vault puts into one loan, raw units of its token (USDG: 6 decimals) |
-| `sides[].cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free in cash, bps, 0 to 10000: what the pool can draw on. 1000 (10%) when omitted |
+| `sides[].cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free, in cash or in its reserve, bps, 0 to 10000: what the pool can draw on. 1000 (10%) when omitted |
 | `sides[].collateral` | list of at most 64 | no | The tokens this vault lends against, of one universe (real-world assets, or the Robinhood ecosystem). When omitted: every token its generation admits in the universe of the pool's other token, less the pool's own two tokens (a stock's vault: the memes paired with it). Naming a pool token is refused unless allowPoolTokens is true |
 | `allowPoolTokens` | boolean | no | true lets a side's collateral name one of the pool's own two tokens, which a fall in that token would then hit twice: in the pool and in the vault's loans. When omitted or false, naming one is refused (POOL_TOKEN_COLLATERAL); a side that names no collateral never lends against them either way |
+
+### `createVault(input)`
+
+The call that creates one partner vault, from its curator.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `curator` | address | yes | Who manages the vault, for good: the wallet or Safe that sends the call. Any address while its generation's creation is open (mainnet's since 5 November 2026), otherwise one gage admitted as a partner there |
+| `name` | string | yes | The vault's name, as depositors see it: 1 to 48 bytes, no control or invisible characters. Its manager may change it |
+| `asset` | address | no | The asset the vault lends: USDG when omitted, or a lend asset gage_capabilities lists (its token address) |
+| `universe` | string | no | What it lends against: rwa (stocks and commodities) or ecosystem (meme and utility coins); it can never lend against both. rwa when omitted, a non-stable asset's vault always ecosystem |
+| `collateral` | list of at most 64 | no | The tokens it lends against, of one universe; every token its generation admits in `universe` when omitted |
+| `term` | number or number | yes | The longest loan it funds, in seconds: 604800 (7 days) or 1814400 (21 days) |
+| `feeBps` | integer 500 to 1500 | yes | The performance fee on each loan's profit, bps, 500 to 1500; the protocol receives 10% of it. Fixed for good |
+| `maxLoan` | raw amount | yes | The most it puts into one loan, raw units of its asset (USDG: 6 decimals) |
+| `cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free, in cash or in its reserve, bps; 0 when omitted |
+| `priorityFeeBps` | integer 0 to 5000 | no | The most it pays the protocol for a loan, bps of its profit, 0 to 5000: the vault paying most is funded first. 2000 when omitted |
+| `minRateGrade` | integer 0 to 4 | no | The lowest Loan grade it funds, 0 (any) to 4 (A, the model's price or more). 3 (B, 90% of it) when omitted |
+| `buyLoans` | object | no | It buys running loans other vaults of its generation sell, when they pay at least the model's return plus this; off when omitted |
+| `buysOnly` | boolean | no | true: it buys running loans alone and funds no new loan, for good; needs buyLoans |
+
+### `vaultOnChain(input)`
+
+One partner vault from the chain alone, and what it can pay a holder now.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `vault` | address | yes | A partner vault |
+| `wallet` | address | no | A holder: adds its shares, what they are worth, what the vault can pay it now, and the call that withdraws that |
 
 ## Actions
 
@@ -336,12 +365,12 @@ End a put's instruction to roll over by itself through its put router.
 
 ### `lp_borrow`: Borrow against an LP position
 
-Borrow against an LP position (a fixed-cost USDG loan against an ETH/USDG or stock/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables, with no liquidation: it is never closed early because a price moves, and if it is not repaid by its end the position is unwound for its lenders and nothing else is taken): the position is approved to the lane's core and moves into its own escrow, and the loan's USDG less the fee comes to the wallet. A Uniswap v4 position leaves any subscription it has (a rewards program that tracks it) as it moves. Fables receipts not wrapped yet (rangeId, gage_lp_positions fablesReceipts) are wrapped into a position first, any staked ones unstaked, and the borrow follows once the wrap is mined. Refused above maxCostBps. Use the prepare object of gage_lp_quote, without its action.
+Borrow against an LP position (a fixed-cost USDG loan against an ETH/USDG or stock/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables, with no liquidation: it is never closed early because a price moves, and if it is not repaid by its end the position is unwound for its lenders and nothing else is taken): the position is approved to the lane's core and moves into its own escrow, and the loan's USDG less the fee comes to the wallet. A Uniswap v4 position leaves any subscription it has (a rewards program that tracks it) as it moves. Fables receipts not wrapped yet (rangeId, gage_lp_positions fablesReceipts) are wrapped into a position first, any staked ones unstaked, and the borrow follows once the wrap is mined. Refused above maxCostBps. Use the prepare object of gage_lp_quote, without its action.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `wallet` | address | yes | The wallet: in a quote, the one that will act (optional); in an action, the one that signs, which `run` sets to the signer's |
-| `adapter` | address | yes | The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's) |
+| `adapter` | address | yes | The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ouro v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's) |
 | `tokenId` | id (decimal string) | no | The position's id (gage_lp_positions); or rangeId for Fables receipts not wrapped yet |
 | `rangeId` | id (decimal string) | no | Fables receipts not wrapped yet (gage_lp_positions fablesReceipts), with the Fables adapter: they are wrapped into a position first, unstaking any staked, then borrowed against; name tokenId or rangeId, not both |
 | `term` | integer, positive | yes | Loan term in seconds, one of gage_capabilities lpLane.terms |
@@ -397,13 +426,13 @@ Deposit USDG into an LP vault, which lends against LP positions in the pools of 
 
 ### `lp_redeem`: Withdraw from an LP vault
 
-Withdraw from an LP vault the wallet's own shares (those it received by transfer too), every share its free cash pays when shares is omitted.
+Withdraw from an LP vault the wallet's own shares (those it received by transfer too), every share it can pay now when shares is omitted (from its free cash, and a reserve vault's reserve).
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `wallet` | address | yes | The wallet: in a quote, the one that will act (optional); in an action, the one that signs, which `run` sets to the signer's |
 | `vault` | address | yes | An LP vault: one gage_lp_vaults lists (the manifest's, or one a curator opened through the lane's factory) |
-| `shares` | raw amount | no | Shares to redeem, raw, in the vault's own decimals (its shareDecimals in gage_lp_vaults and the portfolio, 18 or 12: 10^shareDecimals shares were worth 1 USDG when the vault opened); every share the vault's free cash pays when omitted |
+| `shares` | raw amount | no | Shares to redeem, raw, in the vault's own decimals (its shareDecimals in gage_lp_vaults and the portfolio, 18 or 12: 10^shareDecimals shares were worth 1 USDG when the vault opened); every share the vault can pay now when omitted (from its free cash, and a reserve vault's reserve) |
 | `maxSlippageBps` | integer 0 to 500 | no | Most the conversion may move against you, in bps; 50 when omitted |
 
 ### `lp_claim_bonus`: Claim an LP vault's bonus
@@ -415,6 +444,15 @@ Claim an LP vault's bonus (what a defaulted LP loan's sale brought above its boo
 | `wallet` | address | yes | The wallet: in a quote, the one that will act (optional); in an action, the one that signs, which `run` sets to the signer's |
 | `vault` | address | yes | An LP vault: one gage_lp_vaults lists (the manifest's, or one a curator opened through the lane's factory) |
 | `loanId` | id (decimal string) | no | The defaulted LP loan whose bonus to claim; every loan of the vault with a bonus for this wallet when omitted |
+
+### `lp_claim_rewards`: Claim an LP vault's sGAGE
+
+Claim a reserve LP vault's sGAGE: what its loans earned its holders, outside the share price and with no fee, each holder's by its share of the vault while it arrived, shares held now or not; it moves no USDG. Refused on a vault with no reserve, which pays no sGAGE, and with nothing to claim.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `wallet` | address | yes | The wallet: in a quote, the one that will act (optional); in an action, the one that signs, which `run` sets to the signer's |
+| `vault` | address | yes | A reserve LP vault: one gage_lp_vaults lists with a reserve |
 
 ### `lp_roll`: Roll an LP loan over
 
@@ -491,7 +529,7 @@ Park an out-of-range position: an out-of-range liquidity position's whole liquid
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `wallet` | address | yes | The wallet: in a quote, the one that will act (optional); in an action, the one that signs, which `run` sets to the signer's |
-| `manager` | address | yes | Where the position is held: its position manager (a Uniswap v3, SushiSwap v3 or Ramses V3 NonfungiblePositionManager, or a Uniswap v4 PositionManager), or a Fables hook for its receipts (gage_park_positions manager) |
+| `manager` | address | yes | Where the position is held: its position manager (a Uniswap v3, SushiSwap v3, Ouro v3 or Ramses V3 NonfungiblePositionManager, or a Uniswap v4 PositionManager), or a Fables hook for its receipts (gage_park_positions manager) |
 | `id` | id (decimal string) | yes | The position's id at its manager (gage_park_positions id): its NFT's token id, or a Fables range's id |
 | `vault` | address | yes | The partner vault to park in: one that takes the token the position holds now (gage_park_positions vaults; a DEX names its own) |
 | `maxSlippageBps` | integer 0 to 500 | no | Most the conversion may move against you, in bps; 50 when omitted |
@@ -557,6 +595,57 @@ Collect what exit now sales paid the wallet, from the exit desk: asset (USDG or 
 | `wallet` | address | yes | The wallet: in a quote, the one that will act (optional); in an action, the one that signs, which `run` sets to the signer's |
 | `asset` | address | no | The asset to collect: USDG, or a lend asset gage_capabilities lists; every asset the exit desk owes the wallet when omitted |
 
+### `create_vault`: Create a partner vault
+
+Create one partner vault of the wallet's own, with a free name, lending one asset (USDG, or a lend asset) against tokens of one universe: the wallet manages it for good, and it lends what depositors bring. Who may create: anyone while its generation's creation is open, otherwise a partner gage admitted.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `wallet` | address | yes | Who manages the vault, for good: the wallet that signs |
+| `name` | string | yes | The vault's name, as depositors see it: 1 to 48 bytes, no control or invisible characters. Its manager may change it |
+| `asset` | address | no | The asset the vault lends: USDG when omitted, or a lend asset gage_capabilities lists (its token address) |
+| `universe` | string | no | What it lends against: rwa (stocks and commodities) or ecosystem (meme and utility coins); it can never lend against both. rwa when omitted, a non-stable asset's vault always ecosystem |
+| `collateral` | list of at most 64 | no | The tokens it lends against, of one universe; every token its generation admits in `universe` when omitted |
+| `term` | number or number | yes | The longest loan it funds, in seconds: 604800 (7 days) or 1814400 (21 days) |
+| `feeBps` | integer 500 to 1500 | yes | The performance fee on each loan's profit, bps, 500 to 1500; the protocol receives 10% of it. Fixed for good |
+| `maxLoan` | raw amount | yes | The most it puts into one loan, raw units of its asset (USDG: 6 decimals) |
+| `cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free, in cash or in its reserve, bps; 0 when omitted |
+| `priorityFeeBps` | integer 0 to 5000 | no | The most it pays the protocol for a loan, bps of its profit, 0 to 5000: the vault paying most is funded first. 2000 when omitted |
+| `minRateGrade` | integer 0 to 4 | no | The lowest Loan grade it funds, 0 (any) to 4 (A, the model's price or more). 3 (B, 90% of it) when omitted |
+| `buyLoans` | object | no | It buys running loans other vaults of its generation sell, when they pay at least the model's return plus this; off when omitted |
+| `buysOnly` | boolean | no | true: it buys running loans alone and funds no new loan, for good; needs buyLoans |
+
+### `vault_manage`: Manage a partner vault
+
+Manage a partner vault: its name, pause, automatic funding, priority fee ceiling, fee recipient, risk limits (a lower cap or higher floor applies at once; a looser one waits three hours, then apply), buying running loans, its tokens, and a running loan listed for sale, each field one transaction; what the vault has already is left out. For the vault's manager alone, read from the chain, no gage service asked. A manager cannot withdraw depositors' assets; a fee recipient other than the wallet takes fees not yet claimed too, and a loan listed for sale can sell for as little as book value plus half of what it has still to earn, which depositors bear.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `wallet` | address | yes | The vault's manager: the one wallet its curator's calls take |
+| `vault` | address | yes | A partner vault this wallet manages |
+| `name` | string | no | A new name, as depositors see it: 1 to 48 bytes, no control or invisible characters |
+| `paused` | boolean | no | true pauses new investment (deposits, funding and loan sales); withdrawals go on. false resumes it |
+| `fillersOpen` | boolean | no | Whether gage's automatic funding may fund loans within the vault's mandate; open loans are untouched either way |
+| `priorityFeeBps` | integer 0 to 5000 | no | The most it pays the protocol for a loan, bps of its profit, 0 to 5000; applies at once, up or down |
+| `feeRecipient` | address | no | Where the manager's share of the performance fee is paid, what is not yet claimed included; not the vault itself. In mixed case, its checksum must hold |
+| `maxLoan` | id (decimal string) | no | The most it puts into one loan, raw units of its asset. Lower applies at once, higher waits three hours |
+| `maxPerTokenBps` | integer 0 to 10000 | no | The most of the vault lent against one token, bps. Lower applies at once, higher waits three hours |
+| `cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free, in cash or in its reserve, bps. Higher applies at once, lower waits three hours |
+| `minRateGrade` | integer 0 to 4 | no | The lowest Loan grade it funds, 0 (any) to 4 (A). Higher applies at once, lower waits three hours |
+| `stockBps` | integer 0 to 10000 | no | The most of the vault lent against stocks, bps; a category outside its universe stays closed. Lower applies at once, higher waits three hours |
+| `memeBps` | integer 0 to 10000 | no | The same for meme coins |
+| `ecosystemBps` | integer 0 to 10000 | no | The same for utility coins |
+| `commodityBps` | integer 0 to 10000 | no | The same for commodities |
+| `buyLoans` | object | no | Whether it buys running loans. Stopping, or asking more, applies at once; starting, or asking less, waits three hours |
+| `addTokens` | list of at most 64 | no | Tokens to lend against, of its universe: each waits three hours, then applyTokens |
+| `removeTokens` | list of at most 64 | no | Tokens to stop lending against, at once; open loans run on |
+| `applyTokens` | list of at most 64 | no | Tokens added whose three hours are over: they lend from now |
+| `dropTokens` | list of at most 64 | no | Tokens added and still waiting: dropped |
+| `apply` | list of at most 9 | no | Changes whose three hours are over, by the field that made them: they apply now |
+| `drop` | list of at most 9 | no | Changes still waiting, by the field that made them: dropped |
+| `listLoan` | object | no | Lists a running loan of the vault for sale to other vaults; mandate 13. Its price falls in about five minutes to book value plus half of what it has still to earn, and what a sale gives up, the vault's depositors bear |
+| `cancelListing` | id (decimal string) | no | Takes a loan of the vault off sale |
+
 ## Read tools
 
 The reads of `gageTools(gage)`, each answering as its method does, and the pool vault tools of `poolVaultTools(gage)`,
@@ -571,7 +660,7 @@ No input.
 
 ### `gage_assets`: Collateral gage takes
 
-`gage.assets()`, reads. Tokens gage takes as collateral now: each one's minimum pledge, its most per loan where one is set (maxPerLoan, null where there is none), whether leverage buys it and its Borrow link on gage.cash; a row names the lend asset it is borrowed in, once there is more than USDG.
+`gage.assets()`, reads. Tokens gage admits as collateral now: each one's minimum pledge, its most per loan where one is set (maxPerLoan, null where there is none), whether leverage buys it, how many partner vaults lend against it now (vaults: 0 means none does yet, null that gage's index cannot say; a vault that buys running loans alone funds none and is not counted), a stock's display multiplier (uiMultiplier; amounts here are raw) and its Borrow link on gage.cash; a row names the lend asset it is borrowed in, once there is more than USDG.
 
 No input.
 
@@ -622,7 +711,7 @@ No input.
 
 ### `gage_earn_vaults`: Earn vaults
 
-`gage.earnVaults()`, reads. The partner vaults that lend: tokens, fees, size, free cash, share value and each one's link on gage.cash.
+`gage.earnVaults()`, reads. The partner vaults that take deposits now, in each current generation: each one's manager, tokens, fees, size, free cash, share value and link on gage.cash; lends is false, with buysOnly true, for one that buys running loans alone. Not every vault: LP vaults are gage_lp_vaults', and the withdraw-only vaults of replaced generations and gage's earlier Earn strategies are not listed, so these sizes do not add up to what gage's vaults hold.
 
 No input.
 
@@ -648,7 +737,7 @@ No input.
 
 ### `gage_lp_positions`: LP positions
 
-`gage.lpPositions(wallet)`, reads. A wallet's liquidity positions on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables in a pool gage's LP lane lends against: range, liquidity, amounts and worth in USDG at the pool's price now, and whether the lane takes it now. Uniswap v4 positions are found through gage's index and checked on chain; the note says when some may be missing. Start here to borrow against one.
+`gage.lpPositions(wallet)`, reads. A wallet's liquidity positions on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables in a pool gage's LP lane lends against: range, liquidity, amounts and worth in USDG at the pool's price now, and whether the lane takes it now. Uniswap v4 positions are found through gage's index and checked on chain; the note says when some may be missing. Start here to borrow against one.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
@@ -656,11 +745,11 @@ No input.
 
 ### `gage_lp_quote`: LP loan quote
 
-`gage.lpQuote(input)`, reads. A quote for a fixed-cost USDG loan against an ETH/USDG or stock/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables, with no liquidation: it is never closed early because a price moves, and if it is not repaid by its end the position is unwound for its lenders and nothing else is taken: what the wallet receives and repays, its cost and loan-to-value, signed for the wallet for five minutes at most, with a prepare object for gage_prepare_lp_borrow. Signs nothing.
+`gage.lpQuote(input)`, reads. A quote for a fixed-cost USDG loan against an ETH/USDG or stock/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables, with no liquidation: it is never closed early because a price moves, and if it is not repaid by its end the position is unwound for its lenders and nothing else is taken: what the wallet receives and repays, its cost and loan-to-value, signed for the wallet for five minutes at most, with a prepare object for gage_prepare_lp_borrow. Signs nothing.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `adapter` | address | yes | The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's) |
+| `adapter` | address | yes | The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ouro v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's) |
 | `tokenId` | id (decimal string) | yes | The position's id: its NFT's token id at the adapter's position manager (gage_lp_positions) |
 | `wallet` | address | yes | The wallet that holds the position and will borrow: the quote is signed for it |
 | `term` | integer, positive | yes | Loan term in seconds, one of gage_capabilities lpLane.terms |
@@ -676,7 +765,7 @@ No input.
 
 ### `gage_lp_vaults`: LP vaults
 
-`gage.lpVaults()`, reads. The LP vaults that lend against LP positions, the release's and those curators opened: size, free cash, loans out, share value, fee, its curator, the pools it funds (its mandate, in plain words in funds), whether the registry still lets it lend, and whether each takes deposits and pays out now.
+`gage.lpVaults()`, reads. The LP vaults that lend against LP positions, the release's and those curators opened: size, free cash, loans out, share value, fee, its curator, the pools it funds (its mandate, in plain words in funds), whether the registry still lets it lend, and whether each takes deposits and pays out now; a reserve vault's reserve too: what it holds, what the vault can pay out now and the least a loan must cost it.
 
 No input.
 
@@ -722,6 +811,35 @@ No input.
 | `sides` | list of at most 2 | yes | What is counted in each token, one entry for each pool token gage lends: its largest loan, and the cash it keeps free |
 | `sides[].token` | string | yes | The pool token this side lends, as `pool` names it |
 | `sides[].maxLoan` | raw amount | yes | The most this vault puts into one loan, raw units of its token (USDG: 6 decimals) |
-| `sides[].cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free in cash, bps, 0 to 10000: what the pool can draw on. 1000 (10%) when omitted |
+| `sides[].cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free, in cash or in its reserve, bps, 0 to 10000: what the pool can draw on. 1000 (10%) when omitted |
 | `sides[].collateral` | list of at most 64 | no | The tokens this vault lends against, of one universe (real-world assets, or the Robinhood ecosystem). When omitted: every token its generation admits in the universe of the pool's other token, less the pool's own two tokens (a stock's vault: the memes paired with it). Naming a pool token is refused unless allowPoolTokens is true |
 | `allowPoolTokens` | boolean | no | true lets a side's collateral name one of the pool's own two tokens, which a fall in that token would then hit twice: in the pool and in the vault's loans. When omitted or false, naming one is refused (POOL_TOKEN_COLLATERAL); a side that names no collateral never lends against them either way |
+
+### `gage_create_partner_vault`: Create a partner vault
+
+`gage.createVault(input)`, reads. The call that creates one partner vault of the wallet's own, with a free name, lending one asset (USDG, or a lend asset) against tokens of one universe: the wallet manages it for good, and it lends what depositors bring. Who may create: anyone while its generation's creation is open, otherwise a partner gage admitted. Answers the call for a wallet (simulated from the curator now) and the same as a Safe{Wallet} Transaction Builder file (safeBatch). Never signs; gage_create_vault signs with this server's own wallet, where it has one.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `curator` | address | yes | Who manages the vault, for good: the wallet or Safe that sends the call. Any address while its generation's creation is open (mainnet's since 5 November 2026), otherwise one gage admitted as a partner there |
+| `name` | string | yes | The vault's name, as depositors see it: 1 to 48 bytes, no control or invisible characters. Its manager may change it |
+| `asset` | address | no | The asset the vault lends: USDG when omitted, or a lend asset gage_capabilities lists (its token address) |
+| `universe` | string | no | What it lends against: rwa (stocks and commodities) or ecosystem (meme and utility coins); it can never lend against both. rwa when omitted, a non-stable asset's vault always ecosystem |
+| `collateral` | list of at most 64 | no | The tokens it lends against, of one universe; every token its generation admits in `universe` when omitted |
+| `term` | number or number | yes | The longest loan it funds, in seconds: 604800 (7 days) or 1814400 (21 days) |
+| `feeBps` | integer 500 to 1500 | yes | The performance fee on each loan's profit, bps, 500 to 1500; the protocol receives 10% of it. Fixed for good |
+| `maxLoan` | raw amount | yes | The most it puts into one loan, raw units of its asset (USDG: 6 decimals) |
+| `cashKeptFreeBps` | integer 0 to 10000 | no | The share of the vault a new loan must leave free, in cash or in its reserve, bps; 0 when omitted |
+| `priorityFeeBps` | integer 0 to 5000 | no | The most it pays the protocol for a loan, bps of its profit, 0 to 5000: the vault paying most is funded first. 2000 when omitted |
+| `minRateGrade` | integer 0 to 4 | no | The lowest Loan grade it funds, 0 (any) to 4 (A, the model's price or more). 3 (B, 90% of it) when omitted |
+| `buyLoans` | object | no | It buys running loans other vaults of its generation sell, when they pay at least the model's return plus this; off when omitted |
+| `buysOnly` | boolean | no | true: it buys running loans alone and funds no new loan, for good; needs buyLoans |
+
+### `gage_vault_on_chain`: A partner vault, from the chain
+
+`gage.vaultOnChain(input)`, reads. One partner vault read from the chain alone, gage's index not asked, so it answers while the index does not: which generation, its book, whether a settlement is due, its manager's settings and what waits (the figures Manage shows), and with a wallet its shares, what they are worth, what the vault can pay it now and the call that withdraws that. Signs nothing.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `vault` | address | yes | A partner vault |
+| `wallet` | address | no | A holder: adds its shares, what they are worth, what the vault can pay it now, and the call that withdraws that |

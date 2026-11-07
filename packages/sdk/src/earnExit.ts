@@ -178,7 +178,7 @@ export async function earnExitNow(c: Ctx, i: Extract<ActionInput, { action: "ear
   });
   const title = `Exit ${f.money(worth, cash)} now from ${name} (${f.short(vault)})`;
   // A loan of the vault past its end and not booked stops its sales and what it pays out until a settle books it.
-  if (now >= await c.chain.earliestMaturity(vault)) return settleFirst(c, vault, view(0n, null, null), title, name, indexerOf(c, g));
+  if (now >= await c.chain.earliestMaturity(vault)) return settleFirst(c, vault, view(0n, null, null), title, name, g);
   // What the vault can pay this wallet now (`maxWithdraw`) is a withdrawal, not an exit.
   const payable = await c.chain.vaultMaxWithdraw(vault, wallet) ?? (whole.free < value ? whole.free : value);
   requireThat(worth > payable, "NOTHING_TO_EXIT", `The vault can pay ${f.money(payable, cash)} now: withdraw that with earn_redeem, or exit more than that`);

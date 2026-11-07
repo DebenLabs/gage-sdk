@@ -162,26 +162,44 @@ export async function proveFoundGenerations(chain: Chain, raw: unknown, body: un
 }
 
 /**
- * Asks gage's indexer (`ctx.indexer`) for the found generations at most once per `intervalMs` (60 seconds by default),
- * proves them on chain (`ctx.chain`), and sets `ctx.d` to the manifest `raw` with those; a failed ask keeps what it had.
+ * Brings `ctx.d` up to date at most once per `intervalMs` (60 seconds by default): the manifest `raw` with the generations
+ * gage's indexer (`ctx.indexer`) found, each proved on chain (`ctx.chain`), where `raw` names a GenerationDeployer; a
+ * release that names none has nothing to ask. What fails to be read keeps what it had, and a generation once proved stays
+ * whatever the index says next: what the chain records of it does not un-happen, and its loans and holdings are still its
+ * holders'. A call waits for it at most `waitMs`; `force` (`refreshGenerations`) waits for it whole.
  */
-export function foundGenerationsRefresher(ctx: Ctx, raw: unknown, { intervalMs = 60_000, now = Date.now }: { intervalMs?: number; now?: () => number } = {}) {
+export function foundGenerationsRefresher(ctx: Ctx, raw: unknown, { intervalMs = 60_000, now = Date.now, waitMs = 3_000 }: { intervalMs?: number; now?: () => number; waitMs?: number } = {}) {
+  if (!record(raw) || !record(raw.generationDeployer)) return (): Promise<void> => Promise.resolve();
   let askedAt = -Infinity, flight: Promise<void> | null = null;
-  const proven = new Set<string>();
+  const proven = new Set<string>(), kept = new Map<string, unknown>();
+  // Until gage's index has answered, an engine the release does not name may be a generation found since it.
+  ctx.generationsUnread = true;
   return (force = false): Promise<void> => {
-    if (flight) return flight;
-    if (!force && now() - askedAt < intervalMs) return Promise.resolve();
-    askedAt = now();
-    flight = (async () => {
-      try {
-        const { status, body } = await ctx.indexer.raw("/intent/generations");
-        if (status !== 200) return;
-        const proved = await proveFoundGenerations(ctx.chain, raw, body, proven);
-        if (proved !== null) ctx.d = parseDeployment(mergeFoundGenerations(raw, proved));
-      } catch {
-        // The last good deployment stays.
-      }
-    })().finally(() => { flight = null; });
-    return flight;
+    if (!flight && (force || now() - askedAt >= intervalMs)) {
+      askedAt = now();
+      flight = (async () => {
+        try {
+          const { status, body } = await ctx.indexer.raw("/intent/generations");
+          const proved = status === 200 ? await proveFoundGenerations(ctx.chain, raw, body, proven) : null;
+          if (proved !== null) {
+            const named = proved.generations as Record<string, unknown>;
+            for (const [symbol, entry] of Object.entries(named)) kept.set(symbol, entry);
+            ctx.d = parseDeployment(mergeFoundGenerations(raw, { ...proved, generations: Object.fromEntries(kept) }));
+            // One the index no longer names may read as empty there: said as unread until it does again.
+            ctx.generationsUnread = [...kept.keys()].some((symbol) => !Object.hasOwn(named, symbol));
+          }
+        } catch {
+          // The last good answer stays.
+        }
+      })().finally(() => { flight = null; });
+    }
+    // A method waits a moment for what is found, never for a service or node that hangs: it comes after, for the next one.
+    if (!flight) return Promise.resolve();
+    if (force) return flight;
+    const running = flight;
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, waitMs);
+      void running.finally(() => { clearTimeout(timer); resolve(); });
+    });
   };
 }

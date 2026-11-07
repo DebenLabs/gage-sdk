@@ -38,6 +38,34 @@ const sized = (held: bigint, book: VaultBook, decimals: number) => redeemableSha
 /** The r9 e2e's book, read on the testnet at block 135,337,002: NVDAx vault 0xe374…d591, wallet B its only holder. */
 const E2E: VaultBook = { totalAssets: 1_996_409_170_896_825_396n, totalSupply: 2n * E18, free: 1_996_409_170_896_825_396n, performing: 0n };
 
+// A holder bigger than the vault's free cash: its book read on mainnet, the free cash and the share's value both growing
+// each second, the value a little faster. Sized to the exact cash at one block, the redemption reverts a second later.
+describe("what a holder bigger than the free cash redeems, on a share whose value is growing", () => {
+  const HELD = 11_278_776_266_000_000_000_000n;
+  const AT_READ: VaultBook = { totalAssets: 11_284_710_620n, totalSupply: 11_283_776_266_000_000_000_000n, free: 10_977_855_738n, performing: 306_840_000n };
+  /** The same book `seconds` on: 18 raw units of free cash a second, and the share's value a little faster, as read then. */
+  const later = (seconds: bigint): VaultBook => ({ ...AT_READ, totalAssets: AT_READ.totalAssets + (seconds * 19n), free: AT_READ.free + (seconds * 18n) });
+
+  it("would revert a second after an exact sizing", () => {
+    const exact = ((AT_READ.free + 1n) * (AT_READ.totalSupply + VIRTUAL) - 1n) / (AT_READ.totalAssets + 1n);
+    expect(toAssets(AT_READ, exact, 6)).toBe(AT_READ.free);
+    expect(redeemOnChain(later(1n), exact, 6)).toBeNull();
+  });
+
+  it("is still paid a day after it was sized, a basis point under what the free cash pays", () => {
+    const shares = sized(HELD, AT_READ, 6);
+    expect(shares).toBeLessThan(HELD);
+    for (const seconds of [0n, 1n, 60n, 3_600n, 86_400n]) expect(redeemOnChain(later(seconds), shares, 6), `${seconds} seconds later`).not.toBeNull();
+    const exact = ((AT_READ.free + 1n) * (AT_READ.totalSupply + VIRTUAL) - 1n) / (AT_READ.totalAssets + 1n);
+    expect(shares).toBeGreaterThanOrEqual((exact * 9_999n) / 10_000n - 1n);
+  });
+
+  it("keeps every share of an only holder whose cash is all free: nothing there grows to outrun it", () => {
+    const book = { totalAssets: 42n * E18 / 10n, totalSupply: 4n * E18, free: 42n * E18 / 10n, performing: 0n };
+    expect(sized(book.totalSupply, book, 18)).toBe(book.totalSupply);
+  });
+});
+
 describe("what withdrawing everything redeems, on the vault's book", () => {
   it("never leaves shares out with nothing behind them: the r9 e2e's NVDAx vault and its only holder", () => {
     expect(healthy(redeemOnChain(E2E, 1_999_999_998_201_357_038n, 18)!)).toBe(false);
@@ -87,9 +115,11 @@ describe("what withdrawing everything redeems, on the vault's book", () => {
             const after = redeemOnChain(book, shares, decimals);
             expect(after, what).not.toBeNull();
             expect(healthy(after!), what).toBe(true);
-            // Its only holder is never kept from what the vault could pay and stay healthy.
+            // Its only holder is never kept from what the vault could pay and stay healthy, with all its cash free; short
+            // of cash, by the margin at most (a share's value moves while the transaction is on its way).
             if (others === 0n && shares < supply) {
-              const more = redeemOnChain(book, shares + 1n, decimals);
+              const allFree = lent === 0n && illiquid === 0n;
+              const more = redeemOnChain(book, allFree ? shares + 1n : (shares * 10_002n) / 10_000n + 2n, decimals);
               expect(more === null || !healthy(more), what).toBe(true);
             }
           }

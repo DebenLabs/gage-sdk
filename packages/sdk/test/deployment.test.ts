@@ -1,9 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getAddress, zeroAddress, type Address } from "viem";
 import { describe, expect, it } from "vitest";
+import { createGage } from "../src/client.js";
+import { everyPartnerVault } from "../src/data.js";
 import { parseDeployment, parseLoopPools, type Deployment, type PoolKey } from "../src/deployment.js";
 import { MAINNET_MANIFEST } from "../src/deployments/mainnet.js";
 import { TESTNET_MANIFEST } from "../src/deployments/testnet.js";
+import { ApiError } from "../src/errors.js";
+import { ctx as testContext, fakeUpstream } from "../src/testing.js";
 import { poolId } from "../src/v4math.js";
 
 const flat = (d: Deployment) => ({ ...d, pools: [...d.pools.entries()], loopPools: [...d.loopPools.entries()] });
@@ -91,6 +95,14 @@ describe.skipIf(!existsSync(LIVE))("sync-deployment's bundle of a public LP lane
     const m = live(), { vaults: _, ...l } = lane(m);
     await same({ ...m, lpLane: l });
   });
+
+  it("keeps a lane moved to reserve vaults: its retired factories and its rewards bridge (D454)", async () => {
+    const m = live(), l = { ...lane(m), retiredVaultFactories: [A(0x900a)], rewardsBridge: A(0x900b), vaults: [{ address: A(0x9008), name: "An older factory's vault" }] };
+    await same({ ...m, lpLane: l });
+    const read = parseDeployment(await bundled({ ...m, lpLane: l })).lpLane;
+    expect(read?.rewardsBridge).toBe(getAddress(A(0x900b)));
+    expect(read?.retiredVaultFactories).toEqual([getAddress(A(0x900a))]);
+  });
 });
 
 // The exit desk (Intent D57) is read of every generation, current or retained: the exit actions are served where a
@@ -122,6 +134,18 @@ describe.skipIf(!existsSync(LIVE))("sync-deployment's bundle of the exit desk", 
   });
 });
 
+// A stablecoin market's own registry quotes its sGAGE (`registryRewards`); a bundle without what says so stops asking for it.
+describe.skipIf(!existsSync(LIVE))("sync-deployment's bundle of a lend asset's rewards", () => {
+  it("keeps bridged and rewardTerms", async () => {
+    type Manifest = Record<string, unknown> & { intentV1Assets: Record<string, Record<string, unknown> & { lendAsset: object; engine: Record<string, unknown> }> };
+    const { intentV1AssetsPrevious: _previous, ...m } = json("../../../launch/live/46630.json") as Manifest, gld = m.intentV1Assets.GLDx!;
+    const named: Manifest = { ...m, intentV1Assets: { ...m.intentV1Assets, GLDx: { ...gld, public: true, lendAsset: { ...gld.lendAsset, stable: true }, engine: { ...gld.engine, bridged: false, rewardTerms: "registry", startBlock: 123 } } } };
+    const sync = await import(SYNC.href) as Sync;
+    const read = parseDeployment(sync.trim(named, await sync.sharedReaders())).generations.find((g) => g.id === "GLDx");
+    expect(read?.core).toMatchObject({ registryRewards: true });
+  });
+});
+
 // One indexer origin per generation (D403): the bundle reads each current generation at the origin the release names
 // for it, as the live manifest does. A bundle without them reads every generation at the network's index (MAINNET_DEFAULTS),
 // which at a cutover is another origin than the app's and the keeper's.
@@ -138,6 +162,84 @@ describe.skipIf(!existsSync(LIVE))("sync-deployment's bundle of the indexer orig
     expect(trimmed.intentV1IndexerUrl).toBe("https://current.example");
     expect([trimmed.intentV1Assets.GLDx!.indexerUrl, trimmed.intentV1Assets.NVDAx!.indexerUrl]).toEqual(["https://gldx.example", undefined]);
     expect(parseDeployment(trimmed).generations.map((g) => [g.id, g.indexerUrl])).toEqual([["USDG", "https://current.example"], ["GLDx", "https://gldx.example"], ["NVDAx", "https://current.example"]]);
+  });
+});
+
+// gage.cash's `/api/deployment` serves the manifest with no hosts: every `http(s)://` value is taken out
+// (web/src/lib/publicDeployment.ts). gage-contracts' `deployments/manifest/<chainId>.json` keeps addresses and numbers alone.
+describe("a copy of a release's manifest", () => {
+  const noHosts = (node: unknown): unknown => {
+    const host = (v: unknown) => typeof v === "string" && /^https?:\/\//i.test(v);
+    if (Array.isArray(node)) return node.filter((v) => !host(v)).map(noHosts);
+    if (node && typeof node === "object") return Object.fromEntries(Object.entries(node).filter(([, v]) => !host(v)).map(([k, v]) => [k, noHosts(v)]));
+    return node;
+  };
+  const addressesOnly = (node: unknown): unknown => {
+    const keep = (v: unknown, key: string) => (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v)) || /^(chainId|startBlock|decimals|fee|tickSpacing)$/.test(key);
+    const visit = (n: unknown, key: string): unknown => {
+      if (Array.isArray(n)) { const out = n.map((v) => visit(v, key)).filter((v) => v !== undefined); return out.length ? out : undefined; }
+      if (n && typeof n === "object") {
+        const out = Object.fromEntries(Object.entries(n).map(([k, v]) => [k, visit(v, k)] as const).filter(([, v]) => v !== undefined));
+        return Object.keys(out).length ? out : undefined;
+      }
+      return keep(n, key) ? n : undefined;
+    };
+    return visit(node, "");
+  };
+  const code = (f: () => unknown) => { try { f(); return "none"; } catch (e) { return e instanceof ApiError ? e.code : String(e); } };
+
+  it.each([["mainnet", MAINNET_MANIFEST], ["testnet", TESTNET_MANIFEST]] as const)("loads without its hosts on %s: each earlier generation is read at the network's retained index", (_network, bundled) => {
+    const d = parseDeployment(noHosts(bundled));
+    expect(flat({ ...d, retired: [], generations: [] })).toEqual(flat({ ...parseDeployment(bundled), retired: [], generations: [] }));
+    expect(d.retired.map((g) => g.retired?.indexerUrl)).toEqual(parseDeployment(bundled).retired.map((g) => g.retired?.indexerUrl));
+    // A current generation falls to the network's index, the option `indexerUrl`.
+    expect(d.generations.map((g) => g.indexerUrl)).toEqual(d.generations.map(() => undefined));
+  });
+
+  it("names no index for an earlier generation this package does not know, and such a generation reads as unread, never as empty", async () => {
+    const served = noHosts(MAINNET_MANIFEST) as { intentV1Previous?: unknown[]; intentV1AssetsPrevious?: Record<string, unknown[]>; intentV1Assets?: Record<string, unknown> };
+    const stranger = "0x00000000000000000000000000000000000feed0", other = "0x00000000000000000000000000000000000feed1";
+    const engine = parseDeployment(MAINNET_MANIFEST).engines[0]!.engine;
+    const [key, entry] = Object.entries(served.intentV1Assets ?? {})[0]!;
+    const moved = {
+      ...served,
+      intentV1Previous: [...(served.intentV1Previous ?? []), { intentV1: { core: engine, factory: stranger } }],
+      intentV1AssetsPrevious: { ...(served.intentV1AssetsPrevious ?? {}), [key]: [...(served.intentV1AssetsPrevious?.[key] ?? []), { entry: { ...(entry as object), factory: other } }] },
+    };
+    const d = parseDeployment(moved);
+    const byFactory = (f: string) => d.retired.find((g) => g.factory.toLowerCase() === f.toLowerCase());
+    expect(byFactory(stranger)?.retired).toEqual({ unindexed: true });
+    expect(byFactory(other)?.retired).toEqual({ unindexed: true });
+    // Every generation the package does know is read where its release says, as before.
+    const known = parseDeployment(MAINNET_MANIFEST).retired;
+    expect(d.retired.filter((g) => !g.retired?.unindexed).map((g) => g.retired?.indexerUrl)).toEqual(known.map((g) => g.retired?.indexerUrl));
+    const hosts: string[] = [];
+    const empty = fakeUpstream({ "/intent/partners/vaults": { items: [], nextCursor: null } });
+    const c = testContext({ d, indexer: empty, indexerAt: (host) => { hosts.push(host); return empty; } });
+    const { unread } = await everyPartnerVault(c);
+    expect(unread).toHaveLength(2);
+    expect(unread.join(" ")).toContain(getAddress(stranger));
+    expect(unread.join(" ")).toContain(getAddress(other));
+    expect(unread.join(" ")).toMatch(/names no index/);
+    expect(hosts.every((h) => known.some((g) => g.retired?.indexerUrl === h))).toBe(true);
+  });
+
+  it("loads in createGage, whole as the route answers or as its `deployment`", () => {
+    const served = noHosts(MAINNET_MANIFEST);
+    expect(createGage({ manifest: served }).deployment.chainId).toBe(4663);
+    expect(createGage({ manifest: { deployment: served, tokenLayerDeployed: true } }).deployment.chainId).toBe(4663);
+  });
+
+  it("names what it is when it keeps addresses alone, rather than a reason that is not the cause", () => {
+    const addresses = addressesOnly(MAINNET_MANIFEST);
+    expect(code(() => parseDeployment(addresses))).toBe("MANIFEST_ADDRESSES_ONLY");
+    expect(code(() => createGage({ manifest: addresses }))).toBe("MANIFEST_ADDRESSES_ONLY");
+    expect(() => parseDeployment(addresses)).toThrow(/addresses alone/);
+  });
+
+  it("answers any other manifest it cannot read with its own code", () => {
+    expect(code(() => createGage({ manifest: { ...MAINNET_MANIFEST, USDG: "nope" } }))).toBe("INVALID_MANIFEST");
+    expect(() => createGage({ manifest: { ...MAINNET_MANIFEST, USDG: "nope" } })).toThrow(/USDG is not an address/);
   });
 });
 

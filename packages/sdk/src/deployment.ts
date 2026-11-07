@@ -1,4 +1,7 @@
 import { getAddress, isAddress, zeroAddress, type Address, type Hex } from "viem";
+import { MAINNET_MANIFEST } from "./deployments/mainnet.js";
+import { TESTNET_MANIFEST } from "./deployments/testnet.js";
+import { ApiError } from "./errors.js";
 import { tokenLinks } from "./links.js";
 import { poolId } from "./v4math.js";
 
@@ -38,6 +41,7 @@ export interface Generation {
   core: Engine;
   factory: Address;
   /** The tokens a lend-asset generation lends against, as the release names them; empty for USDG's, which lends against `assets`. */
+  /** The tokens it lends against. */
   collateral: { token: Address; symbol: string; category: string }[];
   /** The router that rolls this generation's loans over (D285), its core's alone; null where the release names none. */
   rolloverRouter: Address | null;
@@ -61,8 +65,12 @@ export interface Generation {
    * `nativeV2.cashoutPools`. A put router buys the repayment back through the same pools.
    */
   loopPools: ReadonlyMap<string, LoopPool[]>;
-  /** An earlier generation the release keeps for its positions (`Deployment.retired`): read from its own index. */
-  retired?: { indexerUrl: string };
+  /**
+   * An earlier generation the release keeps for its positions (`Deployment.retired`): read from its own index, or the
+   * network's where it names none (a found generation its owner has unlisted, on a copy of a manifest with no hosts).
+   * `unindexed`: a copy of a manifest with no hosts, and no release bundled here names its index: its lists are unread.
+   */
+  retired?: { indexerUrl?: string; unindexed?: true; routers?: readonly Address[] };
   /**
    * The index the release names for a current generation (D403): a lend asset's own `indexerUrl`, else the manifest's
    * `intentV1IndexerUrl`, which a generation found on chain shares too. Absent where it names neither: the network's
@@ -104,7 +112,7 @@ export interface LpPool {
   adapter: Address; pool: Address; token0: Address; token1: Address; fee: number; tickSpacing: number; name: string; poolId: Hex | null; native: boolean; hooks: Address | null;
 }
 /**
- * The LP lane (docs/api.md "LP lane", D314, D315): fixed-cost USDG loans against Uniswap v3, SushiSwap v3, Ramses V3 and
+ * The LP lane (docs/api.md "LP lane", D314, D315): fixed-cost USDG loans against Uniswap v3, SushiSwap v3, Ouro v3, Ramses V3 and
  * Uniswap v4 positions, through its own core, registry, vaults, position adapters and sale executors, never an Intent
  * generation.
  */
@@ -112,6 +120,10 @@ export interface LpLane {
   startBlock: number; core: Address; registry: Address;
   /** The LPVaultFactory whose vaults curators open (D318), or null where the release names none. */
   vaultFactory: Address | null;
+  /** Older factories, kept named (D454); their vaults are served only if named in `vaults`. */
+  retiredVaultFactories: Address[];
+  /** The lane's LPRewardsBridge (D454), or null: where it is named, a reserve vault's holders may have sGAGE to claim. */
+  rewardsBridge: Address | null;
   vaults: LpVault[]; adapters: LpAdapter[]; executors: LpExecutor[]; pools: LpPool[];
 }
 
@@ -346,10 +358,32 @@ const origin = (value: unknown, what: string): string => {
 };
 
 /**
- * The generations the release keeps for their positions: USDG's (`intentV1Previous`, whose cores stay among `engines`)
- * and each lend asset's (`intentV1AssetsPrevious`), each with its retained index.
+ * Each earlier generation's index in the releases bundled with this package, by its factory in lower case (docs/api.md
+ * "Historical service retention"): a copy of a manifest that names no hosts, as gage.cash's `/api/deployment` is, reads
+ * those there. A retained index serves only what its frozen manifest names, so no other generation is sent to one.
  */
-function parseRetired(m: Record<string, unknown>, usdg: LendAsset, engines: readonly Engine[], loopPools: ReadonlyMap<string, LoopPool[]>): Generation[] {
+const RETAINED_INDEXES: ReadonlyMap<string, string> = new Map([MAINNET_MANIFEST, TESTNET_MANIFEST].flatMap((bundled) => {
+  const m = bundled as unknown as {
+    intentV1Previous?: readonly { intentV1: { factory: string }; intentV1IndexerUrl?: string }[];
+    intentV1AssetsPrevious?: Record<string, readonly { entry: { factory: string }; indexerUrl?: string }[]>;
+  };
+  return [
+    ...(m.intentV1Previous ?? []).map((row) => [row.intentV1.factory, row.intentV1IndexerUrl] as const),
+    ...Object.values(m.intentV1AssetsPrevious ?? {}).flat().map((row) => [row.entry.factory, row.indexerUrl] as const),
+  ].filter((row): row is readonly [string, string] => typeof row[1] === "string").map(([factory, url]) => [factory.toLowerCase(), url] as const);
+}));
+
+/**
+ * The generations the release keeps for their positions: USDG's (`intentV1Previous`, whose cores stay among `engines`)
+ * and each lend asset's (`intentV1AssetsPrevious`), each with its retained index. Where this copy of the manifest names no
+ * host for it, the bundled release's; one no bundled release names is `unindexed`, read as unread, never as empty.
+ */
+function parseRetired(m: Record<string, unknown>, usdg: LendAsset, engines: readonly Engine[], loopPools: ReadonlyMap<string, LoopPool[]>, current: string | undefined): Generation[] {
+  const retained = (value: unknown, factory: Address, what: string): NonNullable<Generation["retired"]> => {
+    if (value !== undefined) return { indexerUrl: origin(value, what) };
+    const known = RETAINED_INDEXES.get(factory.toLowerCase());
+    return known ? { indexerUrl: known } : { unindexed: true };
+  };
   const out: Generation[] = [];
   const previous = m.intentV1Previous === undefined ? [] : m.intentV1Previous;
   if (!Array.isArray(previous)) throw new Error("Manifest intentV1Previous is not a list");
@@ -359,11 +393,14 @@ function parseRetired(m: Record<string, unknown>, usdg: LendAsset, engines: read
     const engine = addr(block.core, `${at}.intentV1.core`);
     const core = engines.find((e) => e.engine === engine);
     if (!core) throw new Error(`Manifest ${at} lends on an engine nativeV2.engines does not list`);
+    const factory = addr(block.factory, `${at}.intentV1.factory`);
+    // What it lent through while it was current: its loans still run, and only `publicRoutersOf` reads these.
+    const routers = [optional(block.loopRouter, `${at}.intentV1.loopRouter`), optional(block.rolloverRouter, `${at}.intentV1.rolloverRouter`)].filter((r) => r !== null);
     out.push({
-      id: "USDG", primary: true, lendAsset: usdg, core, factory: addr(block.factory, `${at}.intentV1.factory`), collateral: [], rolloverRouter: null,
+      id: "USDG", primary: true, lendAsset: usdg, core, factory, collateral: [], rolloverRouter: null,
       // USDG's lends USDG: no put router (D313); no loop opens on a retained core, so it names no loop router either.
       loopRouter: null, putRouter: null, loopPools, exitDesk: optional(block.exitDesk, `${at}.intentV1.exitDesk`),
-      retired: { indexerUrl: origin(x.intentV1IndexerUrl, `${at}.intentV1IndexerUrl`) },
+      retired: { ...retained(x.intentV1IndexerUrl, factory, `${at}.intentV1IndexerUrl`), ...(routers.length ? { routers } : {}) },
     });
   }
   const assets = m.intentV1AssetsPrevious === undefined ? {} : record(m.intentV1AssetsPrevious, "intentV1AssetsPrevious");
@@ -372,8 +409,16 @@ function parseRetired(m: Record<string, unknown>, usdg: LendAsset, engines: read
     for (const [i, row] of rows.entries()) {
       const at = `intentV1AssetsPrevious.${key} ${i}`;
       const r = record(row, at);
-      out.push({ ...assetGeneration(key, record(r.entry, `${at}.entry`), `${at}.entry`, m), retired: { indexerUrl: origin(r.indexerUrl, `${at}.indexerUrl`) } });
+      const generation = assetGeneration(key, record(r.entry, `${at}.entry`), `${at}.entry`, m);
+      out.push({ ...generation, retired: retained(r.indexerUrl, generation.factory, `${at}.indexerUrl`) });
     }
+  }
+  // A found generation its owner has unlisted: proved on chain, and its loans and holdings still its holders', as a
+  // retained one's. One the release itself hides was never open.
+  for (const [key, value] of Object.entries(m.intentV1Assets === undefined ? {} : record(m.intentV1Assets, "intentV1Assets"))) {
+    const at = `intentV1Assets.${key}`, x = record(value, at);
+    if (x.discovered !== true || x.public !== false) continue;
+    out.push({ ...assetGeneration(key, x, at, m), retired: current ? { indexerUrl: current } : {} });
   }
   return out;
 }
@@ -411,7 +456,7 @@ function parsePrivateRouters(intent: Record<string, unknown>, core: Address): Ma
 const LP_ADAPTER_KINDS: readonly string[] = ["uniswap-v3", "ramses-v3", "uniswap-v4", "fables"];
 const LP_EXECUTOR_KINDS: readonly string[] = ["one-pool", "two-hop", "v4-one-pool"];
 const LP_KEYS = {
-  lane: ["public", "startBlock", "core", "registry", "vaultFactory", "vaults", "adapters", "executors", "pools"],
+  lane: ["public", "startBlock", "core", "registry", "vaultFactory", "retiredVaultFactories", "rewardsBridge", "vaults", "adapters", "executors", "pools"],
   vault: ["address", "name"],
   adapter: ["kind", "address", "positionManager", "factory", "poolManager", "hook"],
   executor: ["address", "token", "kind", "pools", "poolId"],
@@ -426,7 +471,7 @@ const LP_KEYS = {
  * Uniswap v4 or Fables adapter names its PoolManager instead of a factory (a Fables one its hook too), and its pools
  * their id (the pool's `pool` must be its low 160 bits), whether their ETH is native and their hooks (a Fables pool's
  * its adapter's hook). A v4-one-pool sale executor names its pool's id, its one pool the id's low 160 bits, and the
- * lane may name its vault factory (D318). The whole block is checked whenever it is there; it is served only while `public` is true, as
+ * lane may name its vault factory (D318), older factories kept named and its rewards bridge (D454). The whole block is checked whenever it is there; it is served only while `public` is true, as
  * the app serves it, so a hidden lane reads as none. Addresses are checksummed.
  */
 export function parseLpLane(m: Record<string, unknown>): LpLane | null {
@@ -525,13 +570,17 @@ export function lpLaneBlock(m: Record<string, unknown>): { lane: LpLane; public:
     return { ...shape, poolId, native: p.native as boolean, hooks };
   });
   const vaultFactory = raw.vaultFactory === undefined ? null : address(raw.vaultFactory, "lpLane.vaultFactory");
+  const rewardsBridge = raw.rewardsBridge === undefined ? null : address(raw.rewardsBridge, "lpLane.rewardsBridge");
+  const retiredVaultFactories = (raw.retiredVaultFactories === undefined ? [] : listOf(raw.retiredVaultFactories, "lpLane.retiredVaultFactories"))
+    .map((x, i) => address(x, `lpLane.retiredVaultFactories[${i}]`));
   // A lane funds loans through vaults: its own (none since D319) or those curators open through its factory.
   if (!vaults.length && !vaultFactory) invalid("lpLane names no vault and no vault factory");
   const lane: LpLane = {
-    startBlock: raw.startBlock as number, core: address(raw.core, "lpLane.core"), registry: address(raw.registry, "lpLane.registry"), vaultFactory, vaults, adapters, executors, pools,
+    startBlock: raw.startBlock as number, core: address(raw.core, "lpLane.core"), registry: address(raw.registry, "lpLane.registry"), vaultFactory, retiredVaultFactories, rewardsBridge, vaults, adapters, executors, pools,
   };
   // Every contract the lane deploys is its own, named once.
   const owned: [string, Address][] = [["core", lane.core], ["registry", lane.registry], ...(vaultFactory ? [["vaultFactory", vaultFactory] as [string, Address]] : []),
+    ...(rewardsBridge ? [["rewardsBridge", rewardsBridge] as [string, Address]] : []), ...retiredVaultFactories.map((x, i): [string, Address] => [`retiredVaultFactories[${i}]`, x]),
     ...vaults.map((v, i): [string, Address] => [`vaults[${i}]`, v.address]),
     ...adapters.map((a, i): [string, Address] => [`adapters[${i}]`, a.address]), ...executors.map((e, i): [string, Address] => [`executors[${i}]`, e.address])];
   const seen = new Map<Address, string>();
@@ -549,6 +598,11 @@ export function parseDeployment(raw: unknown): Deployment {
   if (m.chainId !== TESTNET && m.chainId !== MAINNET) throw new Error("gage for agents serves Robinhood Chain (4663) and its testnet (46630) only");
   const chainId: ChainId = m.chainId;
   const v2 = record(m.nativeV2, "nativeV2");
+  // gage-contracts' `deployments/manifest/<chainId>.json` keeps addresses and numbers alone: every symbol, lane and switch is gone.
+  const rows = list(v2.assets);
+  if (rows.length > 0 && rows.every((a) => !!a && typeof a === "object" && (a as { symbol?: unknown }).symbol === undefined)) {
+    throw new ApiError("MANIFEST_ADDRESSES_ONLY", "This manifest keeps addresses alone, as gage-contracts exports it: gage-sdk cannot run on it. Leave manifest out to use the one bundled with the SDK, or pass gage.cash's /api/deployment", 400);
+  }
   const intent = record(m.intentV1, "intentV1");
   // Mainnet's partner vaults lend only once the release makes the Intent core public (D257), as the app shows them.
   if (chainId === MAINNET && intent.public !== true) throw new Error("The Intent core is not public on mainnet yet");
@@ -567,7 +621,9 @@ export function parseDeployment(raw: unknown): Deployment {
   if (core.engine !== coreAddress) throw new Error("The newest engine is not the Intent core");
   const listed = (Array.isArray(v2.assets) ? v2.assets : []).map((a: unknown, i: number) => {
     const x = record(a, `asset ${i}`);
-    return { token: addr(x.token, "asset token"), symbol: String(x.symbol), name: String(x.name ?? x.symbol), decimals: Number(x.decimals), lane: String(x.lane), allowed: x.allowed !== false };
+    return {
+      token: addr(x.token, "asset token"), symbol: String(x.symbol), name: String(x.name ?? x.symbol), decimals: Number(x.decimals), lane: String(x.lane), allowed: x.allowed !== false,
+    };
   });
   const assets: Asset[] = listed.map(({ allowed: _, ...a }) => a);
   const loopPools = parseLoopPools(m);
@@ -591,7 +647,7 @@ export function parseDeployment(raw: unknown): Deployment {
   // A rollover, loop or put router serves the one core its fill router names: never two generations, nor two roles.
   const routers = generations.flatMap((g) => [g.rolloverRouter, g.loopRouter, g.putRouter]).filter((r): r is Address => r !== null);
   if (new Set(routers).size !== routers.length) throw new Error("Manifest names a router twice");
-  const retired = parseRetired(m, primary.lendAsset, engines, loopPools);
+  const retired = parseRetired(m, primary.lendAsset, engines, loopPools, current);
   const stateView = m.StateView === undefined ? null : addr(m.StateView, "StateView");
   const lane = lpLaneBlock(m);
   return {
@@ -645,6 +701,14 @@ export const putGenerations = (d: Pick<Deployment, "usdg" | "generations">): Gen
   d.generations.filter((g) => !g.primary && g.loopRouter !== null && g.putRouter !== null && g.collateral.some((x) => x.token.toLowerCase() === d.usdg.toLowerCase()));
 /** The private-lane routers that list on `engine` (D201, M7): none for a core without the lane. */
 export const privateRoutersOf = (d: Deployment, engine: string): readonly Address[] => d.privateRouters.get(engine.toLowerCase()) ?? [];
+/**
+ * The routers the release names on `engine` that list public loans: each generation's on that core, a retained one's too.
+ * With `privateRoutersOf`, what its registry should have admitted (src/data.ts `provenPublic`, D439).
+ */
+export const publicRoutersOf = (d: Pick<Deployment, "generations" | "retired">, engine: string): Address[] =>
+  [...d.generations, ...d.retired].filter((g) => g.core.engine.toLowerCase() === engine.toLowerCase())
+    .flatMap((g) => [g.rolloverRouter, g.loopRouter, g.putRouter, ...(g.retired?.routers ?? [])])
+    .filter((r) => r !== null);
 /** The LP lane's vault at `vault`, in any letter case; null when the lane names none (or there is no public lane). */
 export const lpVaultOf = (lane: LpLane | null, vault: string): LpVault | null => lane?.vaults.find((v) => v.address.toLowerCase() === vault.toLowerCase()) ?? null;
 /** The LP lane's adapter at `adapter`, in any letter case; null when the lane names none. */

@@ -7,7 +7,7 @@ import { gageFrom } from "../src/client.js";
 import { ApiError } from "../src/errors.js";
 import type { View } from "../src/plans.js";
 import { run } from "../src/run.js";
-import { A, CORE, ctx, fakeChain, fakeSigner, fakeUpstream, NOW, NVDA, OTHER, preview, ROUTER, signedLoop, USDG, VAULT, WALLET } from "../src/testing.js";
+import { A, CORE, ctx, fakeChain, fakeSigner, fakeUpstream, loan as chainLoan, NOW, NVDA, OTHER, position, preview, ROUTER, signedLoop, USDG, VAULT, WALLET } from "../src/testing.js";
 
 const borrow = { action: "borrow" as const, wallet: WALLET, token: NVDA, collateral: "5000000000000000000", principal: "1000000000", cap: "1010000000", term: 604_800 };
 const fast = () => Promise.resolve();
@@ -114,6 +114,128 @@ describe("run with the agent's own signer", () => {
     expect(r.status).toBe("done");
     expect(signer.sent.map((t) => t.to.toLowerCase())).toEqual([USDG, VAULT]);
     expect(decodeFunctionData({ abi: partnerVaultAbi, data: signer.sent[1]!.data }).args).toEqual([100_000_000n, 995n * 10n ** 17n]);
+  });
+});
+
+// Once a transaction has gone out, a repeat of the action is a second listing or deposit: nothing a caller's own code does
+// may turn the answer into one that says to ask again.
+describe("a caller's own code, once a transaction has gone out", () => {
+  const throwing = () => { throw new Error("the caller's database is down"); };
+
+  it("cannot take the answer: an onStep that throws leaves every step sent and the run going", async () => {
+    const signer = fakeSigner();
+    const r = await gageFrom(ctx()).run({ ...borrow, wallet: undefined } as never, signer, { sleep: fast, onStep: throwing });
+    expect(r).toMatchObject({ status: "done", error: null, unsent: [] });
+    expect(r.sent.map((s) => s.label)).toEqual(["Approve NVDAx", "Borrow"]);
+    expect(signer.sent).toHaveLength(2);
+    expect(r.notes.join(" ")).toMatch(/onStep/);
+  });
+
+  it("cannot leave a rejection behind it: an async onStep's failure ends no process", async () => {
+    const rejected: unknown[] = [];
+    const listener = (reason: unknown) => { rejected.push(reason); };
+    process.on("unhandledRejection", listener);
+    try {
+      const r = await run(ctx(), borrow, fakeSigner(), { sleep: fast, onStep: (() => Promise.reject(new Error("no"))) as unknown as () => void });
+      expect(r.status).toBe("done");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(rejected).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
+  it("cannot replace it: a limit's release that fails leaves the answer, and the other holds released", async () => {
+    const released: boolean[] = [];
+    const views: string[] = [];
+    const limit = (view: View) => {
+      views.push(view.action);
+      return views.length === 1 ? { release: () => Promise.reject(new Error("no")) } : { release: (sent: boolean) => { released.push(sent); } };
+    };
+    const signer = fakeSigner();
+    const r = await gageFrom(ctx()).run({ ...borrow, wallet: undefined } as never, signer, { sleep: fast, limit });
+    expect(r).toMatchObject({ status: "done", error: null });
+    expect(r.sent).toHaveLength(2);
+    expect(r.notes.join(" ")).toMatch(/spend limit/);
+    const sync = await run(ctx(), borrow, fakeSigner(), { sleep: fast, limit: () => ({ release: throwing }) });
+    expect(sync.status).toBe("done");
+  });
+
+  it("cannot lose the step: a chain that throws while waiting or reading the receipt answers with what was sent", async () => {
+    const waited = await run(ctx({ chain: fakeChain({ wait: () => Promise.reject(new Error("no")) }) }), borrow, fakeSigner(), { sleep: fast });
+    expect(waited).toMatchObject({ status: "stopped", error: { code: "TX_PENDING", retryable: false } });
+    expect(waited.sent).toHaveLength(1);
+    const read = await run(ctx({ chain: fakeChain({ sent: () => Promise.reject(new Error("no")) }) }), borrow, fakeSigner(), { sleep: fast });
+    expect(read).toMatchObject({ status: "done", loan: null });
+    expect(read.sent).toHaveLength(2);
+  });
+
+  it("still refuses as before while nothing has gone out", async () => {
+    const refuse = () => { throw new ApiError("SPEND_LIMIT", "no", 403); };
+    const signer = fakeSigner();
+    expect(await code(run(ctx(), borrow, signer, { sleep: fast, limit: refuse }))).toBe("SPEND_LIMIT");
+    expect(signer.sent).toEqual([]);
+  });
+});
+
+// A plain Error is what a Gage answers as retryable `UNAVAILABLE`, so none may reach that answer once an action has gone
+// out; and where one does say to ask again, the plan read fresh from the chain must no longer hold what went out.
+describe("a plain Error, as a caller meets it through a Gage", () => {
+  const no = () => { throw new Error("no"); };
+  const rejects = () => Promise.reject(new Error("no"));
+  const named = (data: Hex) => decodeFunctionData({ abi: [...engineAbi, ...erc20Abi], data }).functionName;
+  /** Fails the simulation of `step` once, a plain Error from the node. */
+  const failingOnce = (step: string) => {
+    let failed = false;
+    return ({ data }: { data: Hex }) => {
+      if (failed || named(data) !== step) return Promise.resolve(100_000n);
+      failed = true;
+      return Promise.reject(new Error("the node said no"));
+    };
+  };
+
+  it("cannot say to ask again once the listing is mined, whatever throws after it", async () => {
+    const input = { ...borrow, wallet: undefined } as never;
+    for (const options of [{ onStep: no }, { onStep: rejects as unknown as () => void }, { limit: () => ({ release: no }) }, { limit: () => ({ release: rejects }) }]) {
+      const signer = fakeSigner();
+      expect(await gageFrom(ctx()).run(input, signer, { sleep: fast, ...options })).toMatchObject({ status: "done", error: null, unsent: [] });
+      expect(signer.sent.map((t) => named(t.data))).toEqual(["approve", "list"]);
+    }
+    const read = fakeSigner();
+    expect(await gageFrom(ctx({ chain: fakeChain({ sent: rejects }) })).run(input, read, { sleep: fast })).toMatchObject({ status: "done", error: null, loan: null });
+    expect(read.sent).toHaveLength(2);
+    expect(await gageFrom(ctx({ chain: fakeChain({ wait: rejects }) })).run(input, fakeSigner(), { sleep: fast })).toMatchObject({ status: "stopped", error: { code: "TX_PENDING", retryable: false } });
+  });
+
+  it("says to ask again before the listing goes out, and asking again lists once", async () => {
+    const signer = fakeSigner();
+    const chain = fakeChain({
+      simulate: failingOnce("list"),
+      allowance: () => Promise.resolve(signer.sent.length ? 10n ** 30n : 0n),
+    });
+    const input = { ...borrow, wallet: undefined } as never;
+    const first = await gageFrom(ctx({ chain })).run(input, signer, { sleep: fast });
+    expect(first).toMatchObject({ status: "stopped", error: { code: "UNAVAILABLE", retryable: true }, unsent: ["Borrow"] });
+    expect(await gageFrom(ctx({ chain })).run(input, signer, { sleep: fast })).toMatchObject({ status: "done", error: null });
+    expect(signer.sent.map((t) => named(t.data))).toEqual(["approve", "list"]);
+  });
+
+  it("says to ask again on the step after a mined repayment, and asking again repays nothing twice", async () => {
+    const signer = fakeSigner();
+    const did = (step: string) => signer.sent.some((t) => named(t.data) === step);
+    const chain = fakeChain({
+      simulate: failingOnce("withdrawCollateral"),
+      balance: () => Promise.resolve(10n ** 30n),
+      allowance: () => Promise.resolve(did("approve") ? 10n ** 30n : 0n),
+      ownerOf: () => Promise.resolve(WALLET),
+      loan: () => Promise.resolve(chainLoan({ state: did("reclaim") ? 3 : 2, originator: WALLET, collateralBeneficiary: WALLET })),
+    });
+    const c = () => ctx({ chain, indexer: fakeUpstream({ "/v2/positions/": position("7") }) });
+    const input = { action: "reclaim", loanId: "7" } as never;
+    const first = await gageFrom(c()).run(input, signer, { sleep: fast });
+    expect(first).toMatchObject({ status: "stopped", error: { code: "UNAVAILABLE", retryable: true }, unsent: ["Receive collateral"] });
+    expect(await gageFrom(c()).run(input, signer, { sleep: fast })).toMatchObject({ status: "done", error: null });
+    expect(signer.sent.map((t) => named(t.data))).toEqual(["approve", "reclaim", "withdrawCollateral"]);
   });
 });
 

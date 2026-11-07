@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { Abi, AbiParameter } from "viem";
 import { describe, expect, it } from "vitest";
-import { clPoolAbi, fablesHookAbi, fablesWrapperAbi, loopRouterAbi, lpAdapterAbi, lpCoreAbi, lpRegistryAbi, lpVaultAbi, lpVaultFactoryAbi, positionManagerAbi, putRouterAbi } from "../src/abi.js";
+import { clPoolAbi, fablesHookAbi, fablesWrapperAbi, loopRouterAbi, lpAdapterAbi, lpCoreAbi, lpRegistryAbi, lpReserveVaultAbi, lpVaultAbi, lpCompanionAbi, lpVaultFactoryAbi, positionManagerAbi, putRouterAbi } from "../src/abi.js";
 
 // The router's build, as CI's contract artifacts job compiles it and every package job unpacks it (forge build in
 // contracts/ locally); skipped without one, as the keeper's ABI test is. scripts/check-abi-drift.mjs holds the same set
@@ -56,13 +56,15 @@ describe("the put router ABI", () => {
 });
 
 // The LP lane's fragments (docs/api.md "LP lane"), against the default build (contracts/out, as CI's drift check reads
-// it) or the lane's own profile (FOUNDRY_PROFILE=lp, contracts/out-lp), the newer where both exist (a local checkout
-// may hold one older than its sources); skipped without either.
-const lpArtifact = (name: string) => [`../../../contracts/out/${name}.sol/${name}.json`, `../../../contracts/out-lp/${name}.sol/${name}.json`]
+// it) or the lane's own profiles (FOUNDRY_PROFILE=lp, contracts/out-lp; lp2, contracts/out-lp2), the newest where more than
+// one exists (a local checkout may hold one older than its sources); skipped without any.
+const lpArtifact = (name: string) => ["out", "out-lp", "out-lp2"].map((out) => `../../../contracts/${out}/${name}.sol/${name}.json`)
   .map((p) => new URL(p, import.meta.url)).filter((u) => existsSync(u)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 
 describe("the LP lane's ABIs", () => {
-  const sets = [["LPCore", lpCoreAbi], ["LPRegistry", lpRegistryAbi], ["LPVault", lpVaultAbi], ["ILPAdapter", lpAdapterAbi], ["FablesPositionWrapper", fablesWrapperAbi], ["LPVaultFactory", lpVaultFactoryAbi]] as const;
+  const sets = [["LPCore", lpCoreAbi], ["LPRegistry", lpRegistryAbi], ["LPVault", lpVaultAbi], ["ILPAdapter", lpAdapterAbi], ["FablesPositionWrapper", fablesWrapperAbi], ["LPVaultFactory", lpVaultFactoryAbi],
+    // D454: a reserve vault answers all an LPVault does, and its companion what gage-sdk asks of it.
+    ["LPReserveVault", [...lpVaultAbi, ...lpReserveVaultAbi]], ["LPVaultCompanion", lpCompanionAbi]] as const;
   for (const [name, abi] of sets) {
     const artifact = lpArtifact(name);
     it.skipIf(!artifact)(`${name}: every entry the SDK uses is the build's, names and all`, () => {

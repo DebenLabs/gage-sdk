@@ -8,6 +8,7 @@ import { partnerVaultAbi } from "../src/abi.js";
 import { parseDeployment } from "../src/deployment.js";
 import { ApiError } from "../src/errors.js";
 import { prepareNext } from "../src/prepare.js";
+import { portfolio } from "../src/reads.js";
 import { run } from "../src/run.js";
 import { A, CORE, ctx, fakeChain, fakeSigner, fakeUpstream, mainnetManifest, NVDA, VAULT, WALLET } from "../src/testing.js";
 
@@ -105,5 +106,51 @@ describe("the steps that come first", () => {
     expect(r.status).toBe("done");
     expect(r.notes.filter((n) => RATE.test(n))).toHaveLength(1);
     expect(r.notes.at(-1)).toMatch(RATE);
+  });
+});
+
+// With gage's index off, the chain still knows what a core credits the wallet: a read that fails says nothing of what
+// stayed unread, so nothing reads as empty.
+describe("collect, where part of it could not be read", () => {
+  const down = () => fakeUpstream({ "/v2/positions?": () => ({ status: 503, body: {} }), "/intent/partners/vaults?": () => ({ status: 503, body: {} }) });
+
+  it("answers partial with a title that says so, never done", async () => {
+    const p = await prepareNext(ctx({ indexer: down() }), { action: "collect", wallet: WALLET });
+    expect(p).toMatchObject({ status: "partial", next: null });
+    expect(p.summary.title).toBe("Some of this wallet's loans and vaults could not be read now: collect again shortly");
+    expect(p.notes.join(" ")).toMatch(/Not read just now/);
+    const r = await run(ctx({ indexer: down() }), { action: "collect", wallet: WALLET }, fakeSigner());
+    expect(r.status).toBe("partial");
+  });
+
+  it("keeps a credit the chain knows in the plan, read on its own", async () => {
+    const chain = fakeChain({ cashCredit: (core: string) => Promise.resolve(core === CORE ? 7_000_000n : 0n) });
+    const p = await prepareNext(ctx({ indexer: down(), chain }), { action: "collect", wallet: WALLET });
+    expect(p).toMatchObject({ status: "ready", next: { label: "Receive 7.00 USDG" } });
+    expect(p.view).toMatchObject({ action: "collect", usdg: "7000000" });
+    expect(p.notes.join(" ")).toMatch(/Not read just now/);
+    const signer = fakeSigner();
+    const r = await run(ctx({ indexer: down(), chain: fakeChain({ cashCredit: () => Promise.resolve(0n), ...{} }) }), { action: "collect", wallet: WALLET }, signer);
+    expect(r.status).toBe("partial");
+    const sent = await run(ctx({ indexer: down(), chain }), { action: "collect", wallet: WALLET }, fakeSigner());
+    expect(sent).toMatchObject({ status: "partial", sent: [{ label: "Receive 7.00 USDG", outcome: "succeeded" }] });
+  });
+
+  it("says done only with everything read", async () => {
+    const all = fakeUpstream({ "/v2/positions?": { items: [], nextCursor: null }, "/intent/partners/vaults?": { items: [], nextCursor: null } });
+    const p = await prepareNext(ctx({ indexer: all }), { action: "collect", wallet: WALLET });
+    expect(p).toMatchObject({ status: "done", summary: { title: "Nothing is ready to collect" } });
+  });
+});
+
+describe("a portfolio where part of it could not be read", () => {
+  it("says it is partial, and still shows each core's credit the chain knows", async () => {
+    const down = fakeUpstream({ "/v2/positions?": () => ({ status: 503, body: {} }), "/intent/partners/vaults?": () => ({ status: 503, body: {} }), "/intent/partners/links": { links: [] } });
+    const chain = fakeChain({ cashCredit: (core: string) => Promise.resolve(core === CORE ? 7_000_000n : 0n) });
+    const answer = await portfolio(ctx({ indexer: down, chain }), WALLET);
+    expect(answer).toMatchObject({ status: "partial", usdgCredit: "7000000", loans: [] });
+    expect(answer.unread?.length).toBeGreaterThan(0);
+    const up = fakeUpstream({ "/v2/positions?": { items: [], nextCursor: null }, "/intent/partners/vaults?": { items: [], nextCursor: null }, "/intent/partners/links": { links: [] } });
+    expect(await portfolio(ctx({ indexer: up }), WALLET)).not.toHaveProperty("status");
   });
 });

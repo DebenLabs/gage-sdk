@@ -6,7 +6,7 @@
 import { getAddress } from "viem";
 import { describe, expect, it } from "vitest";
 import { parseDeployment } from "../src/deployment.js";
-import { assignLinks, linkName, tokenLinks, TOKEN_RESERVED, VAULT_RESERVED } from "../src/links.js";
+import { assignLinks, linkName, tokenLinks, TOKEN_RESERVED } from "../src/links.js";
 import { A, assetManifest, manifest } from "../src/testing.js";
 
 const A1 = "0x2132aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -63,7 +63,7 @@ describe("assignLinks", () => {
   });
 
   it("never hands out a reserved word or a link that reads as an address", () => {
-    const links = assignLinks([{ address: A1, name: "Gage" }, { address: B1, name: "0x12" }], VAULT_RESERVED);
+    const links = assignLinks([{ address: A1, name: "Gage" }, { address: B1, name: "0x12" }], ["gage"]);
     expect(links.get(A1.toLowerCase())).toBe("gage-2132");
     expect(links.get(B1.toLowerCase())).toBe("0x12-4f2a");
     expect(TOKEN_RESERVED).toEqual(["private", "zap"]);

@@ -41,11 +41,11 @@ export async function borrowAgainstPosition(gage: Gage, signer: Signer) {
 /** Repays an LP loan in full before its end and takes the position back. */
 export const repayLpLoan = (gage: Gage, signer: Signer, loanId: string) => gage.run({ action: "lp_repay", loanId }, signer);
 
-/** Lends to the lane: a USDG deposit (raw, 6 decimals) into the first LP vault that takes deposits now. */
-export async function lendToLpVault(gage: Gage, signer: Signer, amount: string) {
+/** Lends to the lane: a USDG deposit (raw, 6 decimals) into `chosen`, the address of the LP vault you chose. */
+export async function lendToLpVault(gage: Gage, signer: Signer, chosen: string, amount: string) {
   const { vaults } = await gage.lpVaults();
-  const vault = vaults.find((v) => v.takesDeposits);
-  if (!vault) throw new Error("No LP vault takes deposits now");
+  const vault = vaults.find((v) => v.vault.toLowerCase() === chosen.toLowerCase());
+  if (!vault?.takesDeposits) throw new Error("That LP vault takes no deposits now");
   return gage.run({ action: "lp_deposit", vault: vault.vault, amount }, signer);
 }
 

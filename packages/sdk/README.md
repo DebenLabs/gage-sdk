@@ -6,7 +6,8 @@ the end of its term the lenders keep the collateral and nothing else is taken.
 
 It runs on Robinhood Chain (4663, the default) and its testnet (46630, `network: "testnet"`). gage never holds a key,
 and loans the private lane may have opened are never served: gage's index must mark a loan public, and the chain must
-show that no private-lane router opened it. It is the engine of gage's hosted MCP server and of
+show that no private-lane router opened it. With the index silent, a wallet repays its own loan on the chain's proof
+alone, and leaves a vault from the chain. It is the engine of gage's hosted MCP server and of
 [`gage-mcp`](https://www.npmjs.com/package/gage-mcp), the local one.
 
 ```bash
@@ -14,20 +15,26 @@ npm install gage-sdk viem
 ```
 
 viem 2 is a peer dependency, so your app and the SDK share one copy. Node 22 or later, or any bundler: the SDK has no
-Node-only imports.
+Node-only imports. It is ESM: set `"type": "module"` in your `package.json` and run TypeScript with `npx tsx quote.ts`.
+From CommonJS, use a dynamic `import("gage-sdk")` (below Node 22.12, `require` cannot load it).
 
 ```ts
 import { createGage, privateKeySigner } from "gage-sdk";
 
 const gage = createGage(); // Robinhood Chain; createGage({ network: "testnet" }) for its testnet
 
+// Every token gage admits, by symbol; `vaults` says how many partner vaults lend against it now.
+const { assets } = await gage.assets();
+const SPY = assets.find((a) => a.symbol === "SPY")!.token;
+
 // The largest loan the partner vaults fund now for at most 1 SPY, for 7 days, at the lowest fixed cost they accept.
 const quote = await gage.borrowQuote({ token: SPY, maxCollateral: "1000000000000000000", term: 604800 });
+console.log(quote.summary);
 // Or one exact loan: 500 USDG on 1 SPY, at the lowest cost that funds it now (add costBps for a cost of your own).
 const exact = await gage.borrowQuote({ token: SPY, collateral: "1000000000000000000", principal: "500000000", term: 604800 });
 
 // With your own key: every step signed, exact approvals first, each simulated before it is sent.
-const signer = privateKeySigner(key); // for Robinhood Chain; { network: "testnet" } for its testnet
+const signer = privateKeySigner(process.env.WALLET_KEY!); // for Robinhood Chain; { network: "testnet" } for its testnet
 const { action: _, ...terms } = exact.prepare;
 const listed = await gage.run({ action: "borrow", ...terms }, signer);
 const funded = await gage.waitForFill({ loanId: listed.loan!.loanId });
@@ -38,7 +45,13 @@ Amounts are raw integers as decimal strings (USDG has 6 decimals, a lend asset i
 own). Times are Unix seconds. Every default is the network's own: its public RPC, gage's indexer, rates and valuation
 services, and the deployment bundled with the SDK. `createGage({ rpcUrl, indexerUrl, ratesUrl, valuationUrl, manifest })`
 points elsewhere; a generation whose release names its own index (`intentV1IndexerUrl`, a lend asset's `indexerUrl`) is
-read there whatever `indexerUrl` says, as the app reads it. `createGage({ apiKey })` sends a Rates API key to gage's rates service, and only there: without one,
+read there whatever `indexerUrl` says, as the app reads it: to move those reads, pass a `manifest` that names none, or a
+`fetch` of your own. A lend generation deployed since this release is found through gage's indexer and proved on chain,
+with no new SDK: until the index has answered, a lend asset or engine not named yet answers `UNAVAILABLE`, not a refusal,
+and `assets()` and `portfolio()` answer `status: "partial"`. A token gage admits after this release comes with the next
+one: until you update, it answers `UNSUPPORTED_COLLATERAL`, unless you pass the live `manifest` (gage.cash's
+`/api/deployment`).
+`createGage({ apiKey })` sends a Rates API key to gage's rates service, and only there: without one,
 everything here works as it does, under the rates service's ceiling a minute for callers without a key (`RATE_LIMITED`);
 with one, a ceiling of its own and the model's whole quote. Ask for a key with the
 [Integrate with gage](https://github.com/DebenLabs/gage-contracts/issues/new?template=integration.yml) form: partners get one free at first, sent privately, never in an issue. A token gage
@@ -68,25 +81,27 @@ The sections below are the long form of each rule.
 | Method | Answers |
 |---|---|
 | `capabilities()` | chain, contracts, the terms offered, origination fee, pause, the actions served, the rules |
-| `assets()` | tokens taken as collateral now: each one's minimum, its most per loan where its registry sets one (`maxPerLoan`, `null` where there is none), whether leverage buys it, and its Borrow page on gage.cash (`link`, `null` without one) |
+| `assets()` | tokens gage admits as collateral now, as this release names them (`status: "partial"` with `unread` until gage's index has named the lend markets found since it): each one's minimum, its most per loan where its registry sets one (`maxPerLoan`, `null` where there is none), whether leverage buys it, how many partner vaults lend against it now (`vaults`: `0` means none does, so a quote refuses `NO_VAULT_LENDS`; `null` while gage's index cannot say) and for which terms now (`terms`, `null` likewise), whether it is paused and cannot move now (`paused`), a stock's display multiplier (`uiMultiplier`, 18 decimals, `null` for none: every amount here is raw, as the chain counts it, and gage.cash shows a stock's times this), and its Borrow page on gage.cash (`link`, `null` without one) |
 | `borrowQuote({ token, term, maxCollateral, wallet?, lendAsset? })` | the largest loan the partner vaults fund now for at most `maxCollateral`, at the lowest fixed cost they accept |
 | `borrowQuote({ token, term, collateral, principal, costBps?, wallet?, lendAsset? })` | one exact loan: its repayment, cost and fee, whether the vaults fund it now (`fundsNow`) or it would wait (`waitsFor`), the lowest cost (`lowestAcceptedCostBps`) and the largest loan (`largestAccepted`) their settings take, and what each Loan grade costs (`grades`) |
 | `leverageQuote({ token, own, multiple, term, wallet? })` | a loop's amounts, cost and the most its purchase costs |
 | `putQuote({ lendAsset, margin, size, term, wallet? })` | where a lend asset offers puts: a put's margin, purchase and pledge in USDG, its loan, repayment and the most its purchase costs in the asset, and a `prepare` object for `put_open` |
 | `loan({ loanId, engine? })` | one loan's state, amounts and deadlines; what can be done with it now (`actions`: here, or on gage.cash for an action this Gage does not serve); its standing instruction to roll by itself as the router keeps it (`autoRoll`, `null` without one; on a core with a put router, also `putAutoRoll`); and what closed a repaid loan whose collateral does not come back (`closedBy`: `roll` or `cash_out`). On a generation the release has retired, which nothing rolls any more, both instructions read `null`, no roll is listed, and an open loan's `note` says so |
-| `portfolio(wallet)` | the wallet's loans (each one's sGAGE earned and not yet claimed, raw: `sgageClaimable`, which a bridged loan may pay in parts as its source unlocks; whether it rolls by itself: `autoRoll`, never on a retired generation, where an open loan's `note` says why), Earn holdings (each vault's `link`) and credits; where the LP lane is open, `lp`: its loans, credits, LP vault shares and the bonuses to claim; where a release names the chain's exit desk, each Earn holding's open exit (`exit`, see "Exit now") and what exit sales paid the wallet (`exitOwed`) |
-| `earnVaults()` | the partner vaults: tokens, fee, size, free cash, share value, and each one's page on gage.cash (`link`, `null` without one) |
+| `portfolio(wallet)` | `status: "partial"` with `unread` where part of it did not answer, what it read standing; the wallet's loans (each one's sGAGE earned and not yet claimed, raw: `sgageClaimable`, which a bridged loan may pay in parts as its source unlocks; whether it rolls by itself: `autoRoll`, never on a retired generation, where an open loan's `note` says why), Earn holdings (each vault's `link`) and credits; where the LP lane is open, `lp`: its loans, credits, LP vault shares and the bonuses to claim; where a release names the chain's exit desk, each Earn holding's open exit (`exit`, see "Exit now") and what exit sales paid the wallet (`exitOwed`) |
+| `earnVaults()` | the partner vaults: `manager`, tokens, fee, size, free cash, share value, and each one's page on gage.cash (`link`, `null` without one); at most 1,000 a factory, by address, `status: "partial"` with `unread` past them |
 | `vaultFreeCash({ vault })` | one partner vault's free cash: what withdrawals are paid from now (`freeCashUSDG`; `freeCash` in a lend asset's vault), what comes back as its loans end, one entry a day (`schedule`, `by` in Unix seconds), and what loans past their end bring back once settled (`settlingUSDG`), only if their borrowers repay (a loan not repaid brings back its collateral, for the vault's holders, not cash); `bufferBps`, the share of the vault a new loan must leave free ("Cash kept free"); `schedule` and `settlingUSDG` are `null` from an index that does not serve them yet |
 | `balances(wallet)` | ETH for gas, USDG, lend assets and collateral tokens |
-| `lpPositions(wallet)` | where the LP lane is open: the wallet's Uniswap v3 and v4, SushiSwap v3 and Ramses positions in a pool it lends against, newest first, each with its range, liquidity, amounts and worth in USDG at the pool's price now, and whether the lane takes it now (`borrowable`, else `refusal`); Uniswap v4 positions are found through gage's index and checked on chain, and the `note` says when some may be missing |
+| `lpPositions(wallet)` | where the LP lane is open: the wallet's Uniswap v3 and v4, SushiSwap v3, Ouro v3 and Ramses positions in a pool it lends against, newest first, each with its range, liquidity, amounts and worth in USDG at the pool's price now, and whether the lane takes it now (`borrowable`, else `refusal`); Uniswap v4 positions are found through gage's index and checked on chain, and the `note` says when some may be missing |
 | `lpQuote({ adapter, tokenId, wallet, term, vault? })` | a fixed-cost USDG loan against one position, signed for the wallet for five minutes at most: what is pledged, received and repaid, its cost and loan-to-value, and a `prepare` object for `lp_borrow` |
 | `lpLoans(wallet)` | the wallet's LP loans, newest first: state, amounts, end, the position now and what can be done with it now; and what the lane's core credits the wallet |
-| `lpVaults()` | the LP vaults: size, free cash, loans out, share value, fee, and whether each takes deposits and pays out now |
+| `lpVaults()` | the LP vaults: size, free cash, loans out, share value, fee, and whether each takes deposits and pays out now; a reserve vault's `reserve` too: what it holds and can pay, what the vault can pay out now (`freeLiquidity`) and the least a loan must cost it (`minCostBpsPerYear`) |
 | `poolVaults({ curator? })` | the pools among the partner vaults, a curator's alone where one is named: each one's name, curator and two sides, each side its vault and page on gage.cash, or none (see Pool vaults) |
 | `createPoolVaults({ curator, name, pool, term, feeBps, sides, ... })` | a DEX pool's vaults, ready to create: one call per pool token gage lends, each simulated from the curator now, for one wallet batch, and the same as a Safe's Transaction Builder file (see Pool vaults) |
-| `parkPositions(wallet, also?)` | where a pool is served for parking: the wallet's out-of-range liquidity positions in it, each with its range, the one token it holds now (`holds`) and the partner vaults that take that token (`vaults`), or why none can (`refusal`); `also` names Uniswap v4 or Fables positions to read by their manager and id |
-| `parkCalls(input)`, `unparkCalls(input)` | a park or an unpark as one ordered batch of calls for the wallet (`calls`: `to`, `data`, `value`), simulated whole first, for `wallet_sendCalls` (EIP-5792) or to send one by one |
-| `waitForFill({ loanId, engine? }, { timeoutSeconds?, pollSeconds? })` | waits for a listing to be funded: `funded`, `waiting`, `expired`, `cancelled` or `closed` |
+| `createVault({ curator, name, term, feeBps, maxLoan, ... })` | one partner vault with a free name, ready to create: the call, simulated from the curator now, and the same as a Safe's Transaction Builder file (see Your own vault) |
+| `vaultOnChain({ vault, wallet? })` | one partner vault read from the chain alone, gage's index not asked: its generation, book, whether a settlement is due, its manager's settings (`settings`) and what waits (`waiting`), and with `wallet`, its shares, what they are worth, what the vault can pay it now and the call that withdraws that, with its gas (`holder.withdraw`) |
+| `parkPositions(wallet, also?)` | where a pool is served for parking: the wallet's out-of-range liquidity positions in it, each with its range, the one token it holds now (`holds`) and the partner vaults that take that token (`vaults`, each with its `manager`), or why none can (`refusal`); `also` names Uniswap v4 or Fables positions to read by their manager and id |
+| `parkCalls(input)`, `unparkCalls(input)` | a park or an unpark as one ordered batch of calls for the wallet (`calls`: `to`, `data`, `value`, `extraGas`), simulated whole first, for `wallet_sendCalls` (EIP-5792) or to send one by one, each call's gas limit its estimate plus its `extraGas` |
+| `waitForFill({ loanId, engine? }, { timeoutSeconds?, pollSeconds? })` | waits for a listing to be funded: `funded`, `waiting` (`fundingDeadline` null while gage's index has not shown it), `expired`, `cancelled` or `closed` |
 
 Both borrow quotes carry a `prepare` object to pass to `borrow` without its `action`, as the leverage, put and LP quotes
 do for `leverage`, `put_open` and `lp_borrow`. A pledge under the token's minimum is refused with the minimum
@@ -119,22 +134,23 @@ the vaults' settings take. Offer these controls or leave them out: the one-click
 | `auto_roll` | leaves a loan to roll by itself: gage's keeper rolls it in its last hours into a loan of the same size and term, at most `maxCost` each (never more than the loan's principal), up to four times. Without `maxCost`, twice what a roll of it costs now as a roll is quoted (refused when none can be), held to four times the loan's own cost and fee, or for a listing not funded yet twice its own cost and fee | standing approvals: the router may move your loans on that core, and spend the repayments of four rolls, until you withdraw them in your wallet |
 | `cancel_auto_roll` | ends a loan's instruction to roll by itself | nothing |
 | `earn_deposit` | deposits into a partner vault, in the asset it takes | the deposit, exactly |
-| `earn_redeem` | withdraws from a partner vault, everything it can pay when `shares` is omitted | nothing |
+| `earn_redeem` | withdraws from a partner vault, everything it can pay when `shares` is omitted (where its free cash is what limits that, a basis point under it, as a share's value grows while the transaction is on its way) | nothing |
 | `collect` | collects what is ready here: credits from loans, collateral back, vault earnings, collateral the vaults recovered from loans written off (a vault's pocket in any token but its own asset), backing anyone added to loans written off (summed by loan in gage's index, one claim a loan for its next claim's pockets, the oldest 64; from an older index, a vault's pocket in its own asset it names `RECAPITALIZATION`; its own row per asset and `view.backing`), neither ever counted as earnings, the sGAGE of loans and partner vaults, from vaults the chain bears out as gage's, at most twenty claims at a time, and what exit now sales paid (from the exit desk, `view.exits`, where a release names one); a claim that would revert now is left out, and its notes say so, and sGAGE under a millionth is not claimed. The first vault's credits and claims, earlier engines' lender recoveries, retired Earn strategies and the GAGE/sGAGE pool's rewards and Drip are collected on gage.cash | nothing |
 | `feedback` | on mainnet only, rates gage, agent #8845 in ERC-8004: the wallet's own `score` from 0 to 100 in the Reputation Registry, tagged `starred`, once a wallet. Optional, and gage offers nothing for it; an action's last step, and a `done` run, carry a note saying a rating is open | nothing |
 | `put_open` | opens a put on a lend asset (`lendAsset`): your `margin` of USDG and the USDG the loan buys, `size` times the margin in all, pledged in one loan, in one transaction; refused above `maxCostBps` | the margin and the purchase's most, exactly |
 | `put_close` | closes a running loan on a core with a put router out of its own pledge: the pledge buys the repayment back and the rest comes back to you, in one transaction; it never spends more than `maxSlippageBps` over the quote, nor returns less than the `minBack` you name | the loan's reclaim right to the put router |
 | `put_roll` | rolls a put into a new loan of the same size on the same pledge; the new payout passes through your wallet and straight back, and your USDG buys what it leaves short | the reclaim right, the payout's pass and the USDG spend, exactly |
-| `put_auto_roll` | leaves a put to roll by itself: gage's keeper rolls it in its last hours through the put router, at most `maxCost` each, buying each top-up with at most `maxSpend` of your USDG (twice what buying the largest one costs now when omitted, never more than the pledge), up to four times | standing approvals: the router may move your loans on that core, take back four rolls' payouts and spend four top-ups, until you withdraw them in your wallet |
+| `put_auto_roll` | leaves a put to roll by itself, the other action with standing approvals: gage's keeper rolls it in its last hours through the put router, at most `maxCost` each, buying each top-up with at most `maxSpend` of your USDG (twice what buying the largest one costs now when omitted, never more than the pledge), up to four times | standing approvals: the router may move your loans on that core, take back four rolls' payouts and spend four top-ups, until you withdraw them in your wallet |
 | `put_cancel_auto_roll` | ends a put's instruction to roll by itself | nothing |
-| `lp_borrow` | borrows USDG at a fixed cost against a Uniswap v3 or v4, SushiSwap v3, Ramses or Fables position (`adapter`, `tokenId`): the position moves into its own escrow (a Uniswap v4 position leaves any subscription it has), and the loan's USDG less the fee comes to the wallet; refused above `maxCostBps`. With `rangeId` instead of `tokenId`, Fables receipts not wrapped yet are wrapped first (as `lp_wrap`), and the borrow follows once that is mined | the position to the lane's core, on its own position manager |
+| `lp_borrow` | borrows USDG at a fixed cost against a Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables position (`adapter`, `tokenId`): the position moves into its own escrow (a Uniswap v4 position leaves any subscription it has), and the loan's USDG less the fee comes to the wallet; refused above `maxCostBps`. With `rangeId` instead of `tokenId`, Fables receipts not wrapped yet are wrapped first (as `lp_wrap`), and the borrow follows once that is mined | the position to the lane's core, on its own position manager |
 | `lp_repay` | repays your LP loan in full in USDG before its end, and takes the position back | the repayment, exactly |
 | `lp_return_position` | takes back the position of an LP loan repaid before its end | nothing |
 | `lp_collect` | collects a running LP loan's trading fees (a native ETH pool's as WETH), and a Ramses position's rewards, to the wallet; the liquidity stays in place | nothing |
 | `lp_withdraw` | withdraws what the LP lane's core credits the wallet (a loan's USDG, fees, rewards), every token when `token` is omitted | nothing |
 | `lp_deposit` | deposits USDG into an LP vault, for at least what it buys now less `maxSlippageBps` | the deposit, exactly |
-| `lp_redeem` | withdraws from an LP vault, every share its free cash pays when `shares` is omitted | nothing |
+| `lp_redeem` | withdraws from an LP vault, every share it can pay now when `shares` is omitted: from its free cash, and a reserve vault's reserve | nothing |
 | `lp_claim_bonus` | claims an LP vault's bonus for one defaulted loan (`loanId`), or for every one with a bonus for the wallet, twenty at a time | nothing |
+| `lp_claim_rewards` | claims what a reserve LP vault's loans earned the wallet in sGAGE (`vault`); it moves no USDG | nothing |
 | `lp_roll` | rolls your running LP loan into a new loan on the same position before its end (`term`, `maxCostBps`, `vault?`): the position stays in its escrow and only the difference moves, credited to you (then withdrawn) or paid by you; refused above `maxCostBps` | what you pay, exactly, when the new loan nets less than the old repayment |
 | `lp_wrap` | wraps every Fables receipt you hold of one range (`adapter`, `rangeId`) into one position NFT the LP lane lends against; staked receipts are unstaked first and stop earning Fables' emissions | the receipts to the wrapper, exactly |
 | `lp_unwrap` | gives a wrapped Fables position you hold back as its receipts, with their fees less the claim fee Fables keeps | nothing |
@@ -148,14 +164,15 @@ the vaults' settings take. Offer these controls or leave them out: the one-click
 | `earn_exit_list` | lists the next loan for your open exit from `vault`, once its last listing ended unsold and the vault still cannot pay the rest | nothing |
 | `earn_exit_cancel` | withdraws your exit from `vault` before a sale; it goes to the desk the vault's factory bound, so it works while exits are closed | nothing |
 | `earn_exit_collect` | collects what your exits' sales paid you, from the exit desk: in `asset`, or in every asset it owes when omitted | nothing |
+| `create_vault` | creates a partner vault of the wallet's own, with a free name (see Your own vault); `run` answers its address (`vault`) | nothing |
+| `vault_manage` | a vault's manager's calls, each field named one transaction, from the chain alone: name, pause, automatic funding, priority fee ceiling, fee recipient, risk limits, buying and selling running loans, tokens (see Your own vault) | nothing |
 
 A wallet cannot fund a loan directly: lending is an Earn deposit, because only partner vaults lend.
 
 A Gage serves the actions its network's deployment can carry out (`actionsOn`, and `capabilities().actions`): rolling
-over only where a generation has its rollover router, and by itself only where the release names gage's keeper (the
-testnet has neither, so it serves no `roll`, `auto_roll` or `cancel_auto_roll`); `cash_out` only where a core has a
+over only where a generation has its rollover router, and by itself only where the release names gage's keeper; `cash_out` only where a core has a
 cash-out router; `put_open` only where a lend asset offers puts, and the other put actions where a generation names a
-put router; the `lp_` actions only where the release makes the LP lane public; `park` and `unpark` where a pool is
+put router; the `lp_` actions only where the release makes the LP lane public, `lp_claim_rewards` only where it also names the lane's rewards bridge; `park` and `unpark` where a pool is
 served for parking (the release's LP lane's, whatever its switch, or one you add); `rehypo_exit_now` and the
 `earn_exit_` actions where a current generation names its exit desk; `feedback` on mainnet alone.
 
@@ -169,16 +186,19 @@ its own routers, served wherever a retired generation names them. Repay such a l
   `status` is `ready` and `next.final` is true, send it once: a second send lists, loops, rolls, deposits or redeems
   again. `again: true` says the steps come first and the action itself is prepared again once they are mined (a
   vault's settle before a deposit or a withdrawal), so `next` is not its last transaction though `then` is empty. An
-  action that pays out over time adds a `preview` to draw ([Previews](#previews)).
+  action that pays out over time adds a `preview` to draw ([Previews](#previews)). A `status` of `partial` says nothing
+  is left to send of what was read, but part of it did not answer: `collect` again shortly, its `notes` say what.
 - `run({ action, … }, signer)` carries the whole action out for the signer's own wallet. It plans from the chain,
   then builds, simulates, sends and waits for each step in order. A refusal found before any step throws an
-  `ApiError`. Once planned, it answers with `status` (`done`, `nothing_to_do` or `stopped`), every transaction sent
+  `ApiError`; once a transaction has gone out `run` always answers, whatever a callback of yours does. Once planned, it answers with `status` (`done`, `nothing_to_do`, `partial` or `stopped`), every transaction sent
   with its outcome, the steps never sent, the reason it stopped in fixed words, and `loan`: the loan a borrow, a loop,
-  a roll or an LP borrow opened, read from its own receipt (an LP loan's `engine` is the lane's core).
+  a roll or an LP borrow opened, read from its own receipt (an LP loan's `engine` is the lane's core); a `create_vault`
+  answers the vault it created (`vault`) the same way.
 
 Prices move, so the actions that need a signed price get it when they are sent: a loop's and a roll's plans are signed
 for 30 seconds, and a cash-out's sale is quoted again. A roll that costs more, or a sale that pays less, than when it
-was planned is refused before it is sent (`PRICE_MOVED`). A sale is also weighed, once the router holds the loan's
+was planned is refused before it is sent (`PRICE_MOVED`, retryable: prepare again): a sale goes through while its fresh
+quote stays above the least the plan said, and its transaction is held to that least. A sale is also weighed, once the router holds the loan's
 right, against gage's own route for the collateral where the release lists a direct pool for it: one that pays more than
 1% less is refused (`SALE_BELOW_ROUTE`). Where gage has no such route the plan says so; name `minNet`, the least you
 accept, to hold the sale to it (`BELOW_MIN_NET` under it).
@@ -205,10 +225,10 @@ const limit: SpendLimit = (view) => {
 ```
 
 `gage-mcp` builds its limits on this: loans, loops and LP loans in USDG count their principal, deposits (into an LP
-vault too) their amount, a roll only what it borrows beyond the loan it repays (the SDK rolls at the same size, so
+vault too) their amount, a put its margin in USDG, a roll only what it borrows beyond the loan it repays (the SDK rolls at the same size, so
 nothing), and repaying, taking a position back, cashing out, leaving a loan to roll by itself or ending that,
 withdrawing, exiting a partner vault or a rehypo pool now and listing an exit's next loan, cancelling, collecting,
-claiming an LP vault's bonus, actions in an asset other than USDG (puts among them) and rating gage count nothing. On mainnet its limits are on unless the owner sets them `off`.
+claiming an LP vault's bonus or sGAGE, actions in an asset other than USDG (the token a put borrows among them) and rating gage count nothing. On mainnet its limits are on unless the owner sets them `off`.
 
 ## Lend assets
 
@@ -245,7 +265,7 @@ deployment as the put's loop; no aggregator routes a lend asset's purchase.
 ## LP lane
 
 Where a release makes it public (`deployment.lpLane`, `capabilities().lpLane`), gage lends USDG at a fixed cost against
-an ETH/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ramses or Fables, in a pool the lane lists, through
+an ETH/USDG liquidity position on Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables, in a pool the lane lists, through
 the lane's own core, registry and vaults. There is no liquidation: the loan is never closed early because a price moves;
 a loan not repaid by its end is settled by unwinding the position for its lenders, and nothing else is taken.
 
@@ -279,10 +299,20 @@ a loan not repaid by its end is settled by unwinding the position for its lender
   wallets, counted in the vault's own decimals (`shareDecimals`, read from its `decimals()`: 18, or 12 for a vault opened
   before 24 October 2026; 10^shareDecimals shares were worth one USDG when it opened). `lp_deposit` mints them to the
   wallet, and `lp_redeem` redeems the wallet's own (its `balanceOf`, shares it received by transfer included), every
-  share the free cash pays (`maxRedeem`) when none are named. A bonus is what a defaulted loan's sale brought above its
-  book value,
+  share the vault can pay now (`maxRedeem`, a basis point under it while a loan runs) when none are named. A bonus is what
+  a defaulted loan's sale brought above its book value,
   shared by the lenders by their share of the vault and the time they held it while the loan ran; it belongs to
   whichever wallet held the shares then.
+- Where a release names one, a reserve vault is an LP vault that keeps its cash past its curator's buffer in an outside
+  ERC-4626, Steakhouse on mainnet, and draws on it for loans and withdrawals. `lpVaults` names it by its `reserve`. Its `freeCash` is its cash
+  alone, so `lp_redeem` is refused above `maxRedeem`, which follows its cash and what the reserve can pay, not above its
+  free cash; with no `shares` it takes a basis point under `maxRedeem` where that is less than the holding, as a share's
+  value grows while the transaction is on its way. What the reserve returns moves, and carries that reserve's own risk:
+  while it cannot be read the vault's `totalAssetsUSDG` and `usdgPerShare` are null, and it takes no deposit and pays
+  nothing out. Its holders also share sGAGE from its loans, outside the share price and with no fee, kept once their
+  shares are gone: `portfolio().lp.vaults` says what the wallet may claim (`sgageClaimable`, raw, 18 decimals), and
+  `lp_claim_rewards` claims it. Any other LP vault's answers have no `reserve` or `sgageClaimable`, and it refuses that
+  claim (`NOT_RESERVE_VAULT`).
 - Curators: a wallet the LP registry lets open a vault (`mayOpenVault`: a curator it allows, or anyone once its owner
   opens creation) opens one through the lane's factory (`lp_create_vault`) and curates it. A vault funds loans only in the pools of its mandate: one its curator adds funds three hours later, one
   it drops stops at once (open loans run on). `lpVaults` lists the release's vaults and the factory's, each with its
@@ -310,10 +340,39 @@ tokens' symbols (`Fables NVDA/USDG`), and share their curator, which never chang
   them from the curator as one wallet batch (EIP-5792 `wallet_sendCalls`, atomic) or one after the other. `safeBatch` is
   the same calls as a Safe{Wallet} Transaction Builder file for a curator that is a Safe: its owners load it, check each
   call and sign there. gage never signs or proposes.
-- A pool token gage lends no vault of (frxUSD in frxUSD/USDG) gets none, and so does a token whose generation does not
+- A pool token gage lends no vault of (WETH in WETH/USDG) gets none, and so does a token whose generation does not
   admit the curator as a partner yet: `sides` says which and why, and only the other vault is created.
 - The curator must be the one sending: each factory creates only for its caller and makes it the vault's curator for
   good.
+
+## Your own vault
+
+A partner vault lends one asset against tokens of one universe, under its own name. Where a generation's creation is
+open (mainnet's since 5 November 2026), anyone may create one; elsewhere gage admits partners.
+
+- `createVault({ curator, name, asset?, universe?, collateral?, term, feeBps, maxLoan, cashKeptFreeBps?, priorityFeeBps?,
+  minRateGrade?, buyLoans?, buysOnly? })` answers the call, simulated from the curator now, and the same as a Safe{Wallet}
+  Transaction Builder file (`safeBatch`), and signs nothing. `run({ action: "create_vault", … }, signer)` carries it out
+  for the signer's own wallet and answers the new vault's address (`vault`). Left out, a vault lends USDG against every
+  stock and commodity gage admits (`universe: "ecosystem"` for meme and utility coins), keeps no cash free, pays a priority
+  fee of at most 20% of each loan's profit, funds Loan grade B and up, and buys no running loan. `buysOnly` makes a vault
+  that buys running loans and funds no new one, for good (with `buyLoans`, from mandate 13).
+- The creator manages it for good. **`vault_manage`** carries a manager's calls, as gage.cash's Manage sends them, each
+  field one transaction, read from the chain alone: `name`, `paused`, `fillersOpen` (gage's automatic funding),
+  `priorityFeeBps`, `feeRecipient`; the risk limits `maxLoan`, `maxPerTokenBps`, `cashKeptFreeBps`, `minRateGrade`, `stockBps`,
+  `memeBps`, `ecosystemBps`, `commodityBps`; `buyLoans`; `addTokens`, `removeTokens`; `listLoan` and `cancelListing` for a
+  running loan's sale to other vaults. The name, pause, automatic funding, priority fee ceiling and fee recipient apply at
+  once. Among the limits, buying and tokens, a change that tightens the vault applies at once, and one that loosens it waits
+  three hours, so depositors see it coming, then `apply` (a token: `applyTokens`) makes it so; anyone may, and `drop`
+  (`dropTokens`) takes it back. What the vault has already is left out, and what no longer waits or is listed is said in
+  `notes`, so it can be prepared again after each transaction until `status` is `done`. `removeTokens` and `dropTokens` end
+  in one place, the vault not lending against the token, whichever state it is in.
+- A manager cannot withdraw depositors' assets, and the performance fee and the longest loan are fixed for good. Two calls
+  move money all the same, and the plan says how much of it. A new `feeRecipient`, named whole, takes the fees not yet
+  claimed too. A running loan listed for sale (`listLoan`) falls in about five minutes from book value plus 99% of what it
+  has still to earn to book value plus 50% of it, and stays there until the listing ends: what a sale gives up, the vault's
+  depositors bear. A loan already for sale is left as it is, as listing it again would restart its price. The rest is
+  gage's: which tokens are admitted, and which loans gage's keeper funds.
 
 ## Park and unpark
 
@@ -358,7 +417,9 @@ await walletClient.sendCalls({ calls: park.calls.map(({ to, data, value }) => ({
 - **Sending.** `prepare` answers `calls`, every transaction in order, built from one reading of the chain: send them in
   order or as one batch, and do not prepare again between them. `run` sends them in order itself. `parkCalls` and
   `unparkCalls` answer the same calls for `wallet_sendCalls`, simulated whole first (`SIMULATION_FAILED` names the call
-  that would revert).
+  that would revert), and the wallet prices the batch's gas. Sent one by one, a call's gas limit is its own estimate plus
+  its `extraGas` (a string in `prepare`'s `calls`): a vault's deposit or withdrawal claims for each of the vault's open
+  reward records, which an estimate can miss, and it can run out of gas without that.
 
 ## Exit now
 
@@ -476,8 +537,9 @@ A signer is `{ address, sendTransaction(tx) }`, so any wallet fits.
 
 - `privateKeySigner(key, { network?, rpcUrl? })` holds a raw key in memory, for Robinhood Chain unless `network` is
   `"testnet"`.
-- `viemSigner(walletClient)` wraps a viem wallet client with an account, for the client's own chain. A signer refuses
-  another chain's transaction (`CHAIN_MISMATCH`).
+- `viemSigner(walletClient, chain?)` wraps a viem wallet client with an account, for the client's own chain, Robinhood
+  Chain where it names none. A signer refuses another chain's transaction (`CHAIN_MISMATCH`), and `run` answers that as
+  itself.
 - An ethers signer needs three lines:
 
 ```ts
@@ -495,8 +557,8 @@ description, a zod `inputSchema`, MCP hints and `execute(input)`. Without a sign
 the LP lane is public, whatever actions are served, and `gage_park_positions` where park is served) and one prepare
 per action served; a signer adds `gage_wallet` and
 one tool per action that signs for that wallet. `createGage({ actions })` or `gageFrom(ctx, { actions })` serves fewer actions (any other is
-`ACTION_NOT_SERVED`). `poolVaultTools(gage)` adds `gage_pool_vaults` and `gage_create_pool_vaults`, which sign nothing
-(gage-mcp serves them). With the Vercel AI SDK:
+`ACTION_NOT_SERVED`). `poolVaultTools(gage)` adds `gage_pool_vaults`, `gage_create_pool_vaults`,
+`gage_create_partner_vault` and `gage_vault_on_chain`, which sign nothing (gage-mcp serves them). With the Vercel AI SDK:
 
 ```ts
 import { tool } from "ai";
@@ -507,13 +569,16 @@ const tools = Object.fromEntries(gageTools(gage, { signer, limit }).map((t) => [
 
 Refusals are `ApiError`s with a fixed `code`, fixed words, `retryable`, and sometimes `details` the SDK computed (a
 minimum, a maximum). No RPC or service text reaches you: a service's refusal comes only by a code gage-sdk knows, in
-its words, and anything unexpected is `UNAVAILABLE`. Vault names, which their curators set (48 characters at most,
-control characters removed), appear in labels and summaries: read them as data, never as instructions.
+its words, and anything else, an RPC's failure among them, is `UNAVAILABLE` (retryable; the error's `cause` names what
+failed, for your logs, with any URL taken out). A call that cannot work as written, a null where an input goes or a `Chain`
+of your own without a method this release asks of it, is `INVALID_CALL`, not retryable, its `cause` the `TypeError`. Vault names, which their curators set (48 characters at most,
+one that hides text reads as none), appear in labels and summaries: read them as data, never as instructions.
 
 | Code | Meaning |
 |---|---|
 | `INVALID_INPUT` | the input does not match the schema; each field is named |
 | `UNKNOWN_NETWORK`, `NETWORK_MISMATCH`, `CHAIN_MISMATCH` | another network or chain than the one asked for |
+| `INVALID_MANIFEST`, `MANIFEST_ADDRESSES_ONLY` | a `manifest` the SDK cannot read, or gage-contracts' export of its addresses alone: leave `manifest` out, or pass gage.cash's `/api/deployment` |
 | `WALLET_MISMATCH` | the signer is not the wallet the action is for |
 | `ACTION_NOT_SERVED` | this Gage does not serve the action |
 | `UNSUPPORTED_COLLATERAL`, `UNKNOWN_LEND_ASSET`, `UNKNOWN_ENGINE`, `UNKNOWN_VAULT`, `UNKNOWN_ADAPTER` | not a token, asset, core, vault or LP position adapter gage uses |
@@ -521,30 +586,33 @@ control characters removed), appear in labels and summaries: read them as data, 
 | `PRINCIPAL_TOO_HIGH` | more than the pledge supports; `details.maxPrincipal` holds the most |
 | `SIZE_TOO_HIGH` | a put of this size borrows more than its pledge supports now; `details.maxPrincipal` holds the most |
 | `TERMS_NOT_ACCEPTED` | a borrow no partner vault's settings take at these exact terms; `details.lowestCostBps` and `details.largestPrincipal` hold the cost and the loan they would take (`null` where none) |
+| `NO_VAULT_LENDS` | gage admits this token, and no partner vault lends against it yet (`assets()` says so: `vaults: 0`) |
 | `LOAN_TOO_SMALL`, `INSUFFICIENT_CAPACITY`, `TERM_NOT_FUNDED`, `NO_SUGGESTION`, `ONE_DAY_CLOSED`, `SELF_DEALING` | the vaults or the rates model offer no loan for this pledge now |
 | `TERM_NOT_ALLOWED`, `INVALID_TERMS`, `LISTINGS_PAUSED` | terms the core refuses, or new loans paused |
 | `INSUFFICIENT_BALANCE` | the wallet holds less than the action needs |
 | `LOAN_NOT_FOUND`, `NOT_FOUND`, `NOT_YOUR_LOAN` | no such loan, a private one (or one the chain cannot show public now: read it again), or another wallet's |
 | `NOT_CANCELLABLE`, `NOT_REPAYABLE`, `NOT_RUNNING`, `NOT_ROLLABLE`, `TERM_ENDED` | the loan is not in a state for this action |
+| `TOKEN_PAUSED` | the pledge's token is paused, so it cannot move now: a pickup, a roll or a cash-out waits until it resumes (retryable). Repaying and cancelling still go through |
 | `ROLLOVER_CLOSED`, `ROLLOVER_PAUSED`, `AUTO_ROLL_CLOSED`, `NO_AUTO_ROLL` | rolling over is not offered here now (never on a retired generation), or no instruction to end |
 | `ROLL_COST_HIGH`, `MAX_COST_TOO_HIGH` | a roll costs more now than four times the loan's own cost (name `maxCost` to accept it), or a `maxCost` above the loan's principal |
 | `MAX_COST_TOO_LOW`, `MAX_SPEND_ZERO` | a `maxCost` below the origination fee every roll pays, or a put roll's `maxSpend` of zero: limits no roll could meet (r12 review C8) |
-| `CASHOUT_CLOSED`, `NO_SALE` | this loan's core cashes out on gage.cash only, or no aggregator sells its collateral now |
+| `CASHOUT_CLOSED`, `NO_SALE`, `SALE_UNAVAILABLE` | this loan's core cashes out on gage.cash only, no aggregator sells its collateral now (retryable), or the aggregator did not answer as the sale was sent (retryable) |
 | `BELOW_MIN_NET`, `SALE_BELOW_ROUTE` | the sale pays less than the `minNet` you named (`details.net` holds what it pays now), or clearly less than gage's own route, which gage.cash sells through |
 | `LEVERAGE_CLOSED`, `NO_LEVERAGE_POOL`, `POOL_TOO_THIN`, `MULTIPLE_TOO_HIGH`, `PRICE_ABOVE_LIMIT` | leverage cannot buy this purchase at this multiple or cost now |
 | `PUT_CLOSED`, `PUT_PAUSED` | puts are not offered for this asset or on this loan's core (a retired generation's still close, and never roll), or its put router is paused (the loan can still be repaid) |
 | `PLEDGE_SHORT`, `BELOW_MIN_BACK`, `MAX_SPEND_TOO_HIGH` | the pledge cannot buy the repayment back now, a close returns less than the `minBack` you named (`details.back` holds what it returns now), or a roll's `maxSpend` above the loan's pledge |
-| `PRICE_MOVED` | a price moved against the plan before it was sent; prepare again |
-| `PLAN_MISMATCH`, `UNSIGNED`, `PRICING_EXPIRED` | gage's rates service signed no plan for exactly this action |
+| `PRICE_MOVED` | a price moved against the plan before it was sent; prepare again (retryable) |
+| `PLAN_MISMATCH`, `UNSIGNED`, `PRICING_EXPIRED` | gage's rates service signed no plan for exactly this action (the last retryable: prepare again) |
 | `FUNDING_CLOSED`, `SETTLEMENT_DUE`, `PAUSED`, `IMPAIRED`, `BELOW_MINIMUM`, `CAP_EXCEEDED`, `ZERO_SHARES`, `EXCEEDS_BALANCE`, `INSUFFICIENT_LIQUIDITY`, `OUTSTANDING_LOANS`, `TOO_SMALL`, `VAULT_REFUSED` | a partner vault refuses this deposit, withdrawal or exit now |
 | `ASSET_CHANGED` | the core or vault no longer pays in the asset planned; read again |
 | `LP_CLOSED` | the release makes no LP lane public here |
 | `POSITION_NOT_FOUND`, `NOT_OWNER` | no position has this id at the adapter's position manager, or the wallet does not hold it (nor has an LP loan open against it) |
 | `NOT_REPAID` | an LP loan's position comes back only once the loan is repaid (`lp_repay`) |
 | `VAULT_IMPAIRED`, `DEPOSITS_CLOSED` | an LP vault takes no deposit and pays nothing out while a loan past its end is not settled or recovered tokens wait to be sold, or takes no deposit while value it wrote off may still come back |
+| `NOT_RESERVE_VAULT`, `NOTHING_TO_CLAIM` | `lp_claim_rewards` on an LP vault with no reserve, which pays no sGAGE, or with no sGAGE to claim from this one |
 | `NOTHING_TO_WITHDRAW`, `NO_BONUS` | the LP lane credits the wallet none of this token (or the exit desk owes it none of this asset), or the wallet has no bonus to claim from this loan |
 | `NOT_CURATOR`, `NO_VAULT_FACTORY`, `NO_MANDATE`, `POOL_IN_MANDATE`, `POOL_NOT_IN_MANDATE`, `TOO_MANY_POOLS` | the wallet is not a curator the LP registry allows (to open a vault) or not the vault's curator (to change its pools), the lane names no vault factory, the vault names no mandate, the pool is in its mandate already or is not, or the mandate names 32 pools already |
-| `VAULT_NOT_LENDING` | the LP registry no longer lets this vault fund new loans: a deposit would sit idle |
+| `VAULT_NOT_LENDING` | the LP registry no longer lets this vault fund new loans, so it takes no deposit (one with no reserve would hold it idle) |
 | `NOT_FABLES`, `NOTHING_TO_WRAP`, `FABLES_PAUSED` | the adapter named is not the lane's Fables adapter, the wallet holds no Fables receipts of this range, or Fables has paused moving its receipts (retry later; unstaking is never paused) |
 | `UNKNOWN_POOL`, `IN_RANGE`, `NOTHING_TO_PARK`, `PRICE_UNAVAILABLE`, `RAMSES_WAIT` | parking: no pool served at this manager (or of this position), the position is in range and earns fees, it holds nothing, its pool's price cannot be read, or a Ramses position changed in the last three minutes (retry later) |
 | `ETH_NOT_SUPPORTED`, `VAULT_ASSET_MISMATCH`, `VAULT_ASSET_NOT_IN_POOL` | the position holds ETH, which no gage vault takes yet; the vault takes another token than the position holds; or unparking from a vault whose asset the pool does not pair |
@@ -553,18 +621,29 @@ control characters removed), appear in labels and summaries: read them as data, 
 | `POOL_TOKENS_SAME`, `UNKNOWN_TOKEN`, `NAME_TOO_LONG`, `SIDE_NEEDED`, `MAX_LOAN_TOO_HIGH`, `MIXED_COLLATERAL`, `POOL_TOKEN_COLLATERAL` | pool vaults of one token twice, a symbol gage lends no asset of (name such a token by its address), a name the pool's tag takes past 48 bytes, a side gage would create that `sides` does not name, a largest loan above what a vault may lend in one loan, collateral of both universes, or a token of the pool named as a side's collateral without `allowPoolTokens` |
 | `NOT_A_REHYPO_SOURCE`, `NOTHING_TO_EXIT`, `EXITS_CLOSED`, `NO_SHORTFALL`, `NO_LOAN_TO_LIST` | an exit now: not a rehypo source that lends through a partner vault, nothing to exit (no shares or LP shares, or the vault or source can pay it now: withdraw instead), exits closed on the vault's factory, nothing the vault cannot pay, so nothing to list (retry), or none of its loans can be listed now (retry in a few minutes) |
 | `EXIT_OPEN`, `NO_EXIT`, `EXIT_LAPSED`, `LISTING_LIVE` | a partner vault's exit: one already open (list its next loan or cancel it), none open to list or cancel, a request that ended after 24 hours (exit again), or a listing still live (retry once it ends) |
+| `BUY_LOANS_NEEDED`, `BUY_LOANS_CLOSED` | a vault that buys running loans alone names no `buyLoans`, or this generation's factory makes no such vault |
+| `MANAGE_ON_APP`, `CATEGORY_CLOSED`, `INVALID_RECIPIENT`, `NOTHING_NAMED` | managing a vault: one from before named limits or priced listings is managed on gage.cash, a category outside its universe stays closed, the fee recipient cannot be the vault or the zero address, or `vault_manage` names nothing |
+| `UNIVERSE_MISMATCH` | creating a vault: the tokens named are not of the universe named, which is fixed for good |
+| `CHANGE_WAITING`, `NOTHING_WAITING` | a loosened limit, a token added or a change to buying loans whose three hours are not over, or a token to apply that neither waits nor is picked |
+| `NOT_FOR_SALE`, `LOAN_ENDING`, `EXIT_LISTED` | listing a vault's running loan: nothing of it the vault can sell, under an hour left, an exit has it listed, or it is not listed |
 | `NOT_LENT`, `NOT_A_PARTNER`, `FACTORY_CHANGED` | gage lends neither pool token, a token's factory admits partners only and gage has not admitted the curator (creation is open to anyone on mainnet since 5 November 2026), or a factory is not the one the release publishes |
 | `SIMULATION_FAILED` | the transaction would revert now |
 | `SEND_FAILED`, `SEND_UNKNOWN`, `TX_PENDING`, `TX_FAILED` | the signer did not send and the wallet's nonce did not move (nothing went out; it may be sent again), the signer failed after the wallet sent a transaction (it may have gone out: look up the wallet's latest transaction before sending again), the transaction is not mined yet, or it reverted (`run` answers these) |
-| `RATES_REFUSED`, `RATES_UNAVAILABLE`, `UPSTREAM_UNAVAILABLE`, `UPSTREAM_INVALID`, `UPSTREAM_TOO_LARGE` | one of gage's services refused, did not answer, or answered outside what was asked (an instant loan pledging more than the tokens asked about) |
-| `RATE_LIMITED` | one of gage's services asks for fewer requests a minute; wait and ask again, or give a Rates API key (`apiKey`, [ask for one](https://github.com/DebenLabs/gage-contracts/issues/new?template=integration.yml)) |
+| `RATES_REFUSED`, `RATES_UNAVAILABLE`, `UPSTREAM_UNAVAILABLE`, `UPSTREAM_INVALID`, `UPSTREAM_TOO_LARGE` | one of gage's services refused, did not answer (in a browser, a fetch that failed says this page's origin may not be allowed: a browser refuses one for its origin just as it loses one), or answered outside what was asked (an instant loan pledging more than the tokens asked about) |
+| `RATE_LIMITED` | one of gage's services asks for fewer requests a minute; wait and ask again (`details.retryAfterSeconds` where it says how long), or give a Rates API key (`apiKey`, [ask for one](https://github.com/DebenLabs/gage-contracts/issues/new?template=integration.yml)) |
 | `INVALID_KEY`, `NO_ACCOUNT` | a signer without a usable key or account |
 | `UNAVAILABLE` | anything else; retry later |
 
 The rates service's refusals come only by the codes gage-sdk knows, in its words: `ABOVE_MARKET_LIMIT`,
-`ASSET_OPEN_CAP`, `COLLATERAL_NOT_ALLOWED`, `FILLER_NOT_ADMITTED`, `FILLS_CLOSED`, `INCOMPLETE_PLAN`, `LOAN_NOT_ACTIVE`,
-`NO_COST_OFFERED`, `NO_FILLER`, `NOT_RIGHT_HOLDER`, `PRICING_UNAVAILABLE`, `PRINCIPAL_TOO_SMALL`, `PURCHASE_TOO_SMALL`,
-`RETURN_ABOVE_PRINCIPAL`, `ROUTER_NOT_ADMITTED`, `SIGNER_NOT_CONFIGURED`, `TOO_LATE`, and those of the same name above.
+`ALLOCATION_UNAVAILABLE`, `ASSET_LIMIT`, `ASSET_NOT_IN_MANDATE`, `ASSET_OPEN_CAP`, `BELOW_RETURN_FLOOR`,
+`BELOW_VAULT_REGISTRY_FLOOR`, `BORROWER_IS_CURATOR`, `CATEGORY_LIMIT`, `CHAIN_UNAVAILABLE` (retryable),
+`COLLATERAL_NOT_ALLOWED`, `CORE_REFUSES`, `EMPTY_PLAN`, `FILLER_NOT_ADMITTED`, `FILLS_CLOSED`, `FUNDING_DEADLINE_INVALID`,
+`FUNDING_DEADLINE_TOO_CLOSE`, `GRADE_TOO_LOW`, `INCOMPLETE_PLAN`, `LOAN_LIMIT`, `LOAN_NOT_ACTIVE`, `NO_COST_OFFERED`,
+`NO_FILLER`, `NO_MODELED_COST`, `NOT_FACTORY_SIGNER`, `NOT_RIGHT_HOLDER`, `PRICING_PROVISIONAL` (retryable),
+`PRICING_UNAVAILABLE` (retryable), `PRINCIPAL_TOO_SMALL`, `PRIVATE_LOAN`, `PURCHASE_TOO_SMALL`, `RECORD_LIMIT`,
+`REGISTRY_COST_MISSING`, `RETURN_ABOVE_PRINCIPAL`, `ROUTER_NOT_ADMITTED`, `SECONDARY_ONLY`, `SIGNER_NOT_CONFIGURED`,
+`TERM_TOO_LONG`, `TOO_LATE`, `VAULT_EMPTY`, `VAULT_FILLS_CLOSED`, `VAULT_PAUSED`, `WRONG_ENGINE`, and those of the same
+name above.
 An LP quote's refusals come the same way: `ADAPTER_NOT_ALLOWED`, `POOL_NOT_ALLOWED`, `RANGE_TOO_NARROW`,
 `EMPTY_POSITION`, `LOANS_PAUSED`, `BELOW_MINIMUM_LOAN`, `ABOVE_LOAN_CAP`, `ABOVE_POOL_CAP`, `ABOVE_DAILY_CAP`,
 `VAULT_CANNOT_FUND` and `NOT_REGISTRY_SIGNER`, with `LP_CLOSED`, `NOT_OWNER`, `TERM_NOT_ALLOWED` and
@@ -575,7 +654,7 @@ An LP quote's refusals come the same way: `ADAPTER_NOT_ALLOWED`, `POOL_NOT_ALLOW
 ## Testing
 
 `gage-sdk/testing` has a fake chain, fake gage services, a fake signer and a fixture deployment, so an integration can
-be exercised with no network.
+be exercised with no network: `gageFrom(ctx())` answers reads and a worked borrow quote out of the box.
 
 ## Development
 

@@ -55,3 +55,35 @@ export const days = (seconds: number) => {
 };
 export const date = (unix: number) => new Date(unix * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
 export const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+/** A token's own symbol is data, never words: kept short and plain, else "" and the caller names it otherwise. */
+export const plainSymbol = (symbol: string) => (/^[A-Za-z0-9.$_-]{1,16}$/.test(symbol) ? symbol : "");
+
+/** What shows other than it reads, as the app's own rule has it (`nameHidesText`, shared/link-name.mjs). */
+const HIDES_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/u;
+
+/**
+ * A name someone else wrote, as one line of plain text of at most `most` characters; "" where it hides text, which is no
+ * name at all: a name is never cleaned into another's.
+ */
+export const plainName = (text: string, most: number) =>
+  HIDES_TEXT.test(text.replace(/\uFE0F/gu, "")) ? "" : Array.from(text.replace(/\s+/gu, " ").trim()).slice(0, most).join("").trim();
+
+/** Letters that read as the Latin ones the words below are spelled with, once NFKD has folded the rest. */
+const LOOKALIKE: ReadonlyMap<string, string> = new Map(Object.entries({
+  "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0441": "c", "\u0456": "i", "\u0442": "t", "\u043c": "m", "\u0501": "d", "\u050d": "g",
+  "\u0261": "g", "\u0251": "a", "\u03b1": "a", "\u03b5": "e", "\u03bf": "o", "\u03b9": "i", "\u03c4": "t", "\u03bc": "m", "\u03bd": "v", "\u03c5": "u",
+}));
+const CLAIM_WORDS: ReadonlySet<string> = new Set(["official", "officially", "verified", "audited"]);
+const BADGE_WORDS: ReadonlySet<string> = new Set(["team", "og"]);
+
+/**
+ * Whether a vault's name claims what only gage or a badge could say, as the app's own rule has it (`nameClaims`,
+ * shared/link-name.mjs): a word that starts with gage's name, official, verified or audited, or a first word that reads as
+ * a badge. Anyone can name a vault anything, so such a name is not repeated: this package holds no badges, and a vault's
+ * manager is in each answer.
+ */
+export const nameClaims = (name: string): boolean => {
+  const words = name.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/./gu, (letter) => LOOKALIKE.get(letter) ?? letter).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return BADGE_WORDS.has(words[0] ?? "") || words.some((word) => word.startsWith("gage") || CLAIM_WORDS.has(word));
+};

@@ -12,7 +12,7 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 
 /** How to start gage-mcp: the published package by default. */
 export interface ServerCommand { command: string; args: string[]; cwd?: string }
-export const NPX: ServerCommand = { command: "npx", args: ["-y", "gage-mcp"] };
+export const NPX: ServerCommand = { command: "npx", args: ["-y", "gage-mcp@0.9.0"] };
 
 /**
  * Starts gage-mcp with `env` (GAGE_NETWORK, the spend limits, GAGE_HOME, …), and answers what it serves: whether it signs,

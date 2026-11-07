@@ -67,8 +67,10 @@ export const MAINNET_DEFAULTS = {
 
 /**
  * The loan terms gage offers on a chain, of those its registry allows, in seconds: on mainnet the product's 7 and 21
- * days alone (a registry may allow more, such as a 1-day term, which no vault there lends for and the rates service does
- * not price), on the testnet every one its registry allows (web/src/lib/terms.ts).
+ * days alone, on the testnet every one its registry allows (web/src/lib/terms.ts). Mainnet's registry also allows 1 day:
+ * the rates service prices it for NVDA and gage.cash offers it on that token's ticket (D367, web/src/borrow/oneDay.ts), but
+ * this package does not. A vault with a Loan grade floor cannot fund it, the keeper publishing no modeled cost for that
+ * length; only one set to Any could.
  */
 export const MAINNET_TERMS: readonly number[] = [7 * 86_400, 21 * 86_400];
 export const offeredTerms = (chainId: ChainId, allowed: readonly number[]): number[] =>
@@ -95,10 +97,11 @@ export function networkNamed(name: unknown): NetworkDefaults {
  * still ended (`cancel_auto_roll`, `put_cancel_auto_roll`) and a put on it closed (`put_close`).
  * The LP lane's actions (D314, D315) only where the release makes the lane public (`lpLane`), as the app serves it, its
  * roll (D317) with them, and wrapping Fables receipts into a position and back only where it names a Fables adapter (D316).
- * The testnet's release names no rollover router, so it serves no roll. Park and unpark (D334) where there is a pool to
+ * Park and unpark (D334) where there is a pool to
  * serve: the release's LP lane's, whatever its switch, or one the caller added (`parkPools`). A rehypo pool's exit now
  * (root D357), and a partner vault's with its next listing, its cancel and what its sales paid, where a current
- * generation names its exit desk (Intent D57).
+ * generation names its exit desk (Intent D57). A partner vault of one's own, created and managed, on every network: its
+ * factory says who may create.
  */
 export function actionsOn(d: Pick<Deployment, "chainId" | "usdg" | "engines" | "generations" | "rolloverExecutor"> & Partial<Pick<Deployment, "lpLane" | "retired" | "parkPools">>): ActionName[] {
   const rolls = d.generations.some((g) => g.rolloverRouter !== null);
@@ -113,10 +116,11 @@ export function actionsOn(d: Pick<Deployment, "chainId" | "usdg" | "engines" | "
     borrow: true, leverage: true, cancel: true, reclaim: true, cash_out: sells, roll: rolls, auto_roll: rolls && d.rolloverExecutor !== null,
     cancel_auto_roll: ends, earn_deposit: true, earn_redeem: true, collect: true, feedback: defaultsFor(d.chainId).beacon !== null,
     put_open: putGenerations(d).length > 0, put_close: closes, put_roll: puts, put_auto_roll: puts && d.rolloverExecutor !== null, put_cancel_auto_roll: closes,
-    lp_borrow: lp, lp_repay: lp, lp_return_position: lp, lp_collect: lp, lp_withdraw: lp, lp_deposit: lp, lp_redeem: lp, lp_claim_bonus: lp, lp_roll: lp,
+    lp_borrow: lp, lp_repay: lp, lp_return_position: lp, lp_collect: lp, lp_withdraw: lp, lp_deposit: lp, lp_redeem: lp, lp_claim_bonus: lp, lp_claim_rewards: Boolean(d.lpLane?.rewardsBridge), lp_roll: lp,
     lp_wrap: fables, lp_unwrap: fables, lp_create_vault: curators, lp_vault_add_pool: lp, lp_vault_remove_pool: lp,
     park: (d.parkPools?.length ?? 0) > 0, unpark: (d.parkPools?.length ?? 0) > 0,
     rehypo_exit_now: desk, earn_exit_now: desk, earn_exit_list: desk, earn_exit_cancel: desk, earn_exit_collect: desk,
+    create_vault: true, vault_manage: true,
   };
   return ACTIONS.filter((a) => served[a]);
 }

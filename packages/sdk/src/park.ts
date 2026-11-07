@@ -1,5 +1,5 @@
 /**
- * Park and unpark (D334). An LP whose Uniswap v3 or v4, SushiSwap v3, Ramses or Fables position is out of range pulls its
+ * Park and unpark (D334). An LP whose Uniswap v3 or v4, SushiSwap v3, Ouro v3, Ramses or Fables position is out of range pulls its
  * liquidity out on its own DEX and deposits the side it holds (USDG, or a token a lend-asset vault lends) into a gage
  * partner vault, usually the DEX's own; later it withdraws and opens a new position in a range it picks. Both run from
  * the LP's own wallet as an ordered list of calls, one batch where the wallet sends one (EIP-5792), with no gage contract
@@ -23,10 +23,10 @@ import * as f from "./format.js";
 import { bookGas } from "./gas.js";
 import { indexedPositions, MAX_LP_POSITIONS, positionAmounts, tokenRefs } from "./lp.js";
 import {
-  approval, assetScale, inAsset, MIN_DEPOSIT, partner, plan, refOf, refusalWords, sameVaultAsset, settleFirst, VIRTUAL_SHARES, vaultRefusal,
+  approval, assetScale, inAsset, listedPartner, MIN_DEPOSIT, partner, plan, refOf, refusalWords, sameVaultAsset, settleFirst, VIRTUAL_SHARES, vaultRefusal,
   type Ctx, type Plan, type Row, type Step, type TokenRef, type Tx, type View,
 } from "./plans.js";
-import { parseInput, type ActionInput } from "./schemas.js";
+import { address, parseInput, type ActionInput } from "./schemas.js";
 import { MAX_TICK, MIN_TICK, poolId, sqrtPriceAtTick } from "./v4math.js";
 
 /** How long a park's or an unpark's calls stay good once planned (their DEX deadline, a Permit2 approval's expiry). */
@@ -51,7 +51,7 @@ const keyOf = (p: Pick<ParkPool, "manager" | "id">) => `${p.manager}:${p.id}`.to
 
 // ---- Pools --------------------------------------------------------------------------------------------------------
 
-const hexAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "an 0x address");
+const hexAddress = address;
 const fee = z.number().int().min(0).max(0xff_ffff);
 const spacing = z.number().int().min(1).max(32_767);
 /**
@@ -216,13 +216,13 @@ export function holdingOf(h: Pick<Held, "tickLower" | "tickUpper" | "liquidity">
   return { amount0, amount1, inRange, side, amount: side === 0 ? amount0 : side === 1 ? amount1 : 0n };
 }
 
-/** The partner vaults that take each asset now, by its address in lower case (current generations, those taking deposits). */
-async function vaultsByAsset(c: Ctx): Promise<Map<string, { vault: Address; name: string }[]>> {
-  const out = new Map<string, { vault: Address; name: string }[]>();
+/** The partner vaults that take each asset now, by its address in lower case (current generations, those taking deposits), each with its manager. */
+async function vaultsByAsset(c: Ctx): Promise<Map<string, { vault: Address; name: string; manager: string }[]>> {
+  const out = new Map<string, { vault: Address; name: string; manager: string }[]>();
   for (const { v, g } of await allPartnerVaults(c)) {
     if (!v.fundingEnabled || g.retired) continue;
     const key = g.lendAsset.token.toLowerCase();
-    out.set(key, [...(out.get(key) ?? []), { vault: getAddress(v.address), name: vaultName(v, c.d) }]);
+    out.set(key, [...(out.get(key) ?? []), { vault: getAddress(v.address), name: vaultName(v, c.d), manager: v.curator }]);
   }
   return out;
 }
@@ -380,7 +380,7 @@ async function park(c: Ctx, i: Extract<ActionInput, { action: "park" }>): Promis
   const token = x.side === 0 ? pool.token0 : pool.token1, amount = x.amount;
   if (isEth(c, token)) throw new ApiError("ETH_NOT_SUPPORTED", "The position holds ETH now, and no gage vault takes ETH yet: it parks once it holds USDG, or a token a gage vault lends", 409);
   const refs = await refsOf(c, [pool.token0, pool.token1]);
-  const { address: vault, v, g } = await partner(c, i.vault);
+  const { address: vault, v, g } = await listedPartner(c, i.vault);
   const cash = g.lendAsset, held = refIn(refs, token);
   requireThat(same(cash.token, token), "VAULT_ASSET_MISMATCH", `This vault takes ${cash.symbol}, and the position holds ${held.symbol} now: park it into a vault that takes ${held.symbol}`);
   requireThat(!g.retired && v.fundingEnabled, "FUNDING_CLOSED", "This vault takes no deposit now");
@@ -402,7 +402,7 @@ async function park(c: Ctx, i: Extract<ActionInput, { action: "park" }>): Promis
   // The vault's own generation's index (D403), which listed it.
   const index = indexerOf(c, g);
   const p = await index.get(`/intent/partners/vaults/${vault.toLowerCase()}/preview?deposit=${amount}`, previewAnswer);
-  if (p.refusal === "SETTLEMENT_DUE") return settleFirst(c, vault, view, title, name, index);
+  if (p.refusal === "SETTLEMENT_DUE") return settleFirst(c, vault, view, title, name, g);
   requireThat(!p.refusal, vaultRefusal(p.refusal), refusalWords(p.refusal, cash, g.primary) ?? "The vault refuses this deposit");
   // A native ERC-4626 vault answers `maxWithdraw`; an earlier generation's does not, and takes its slippage-held deposit.
   const native = (await c.chain.vaultMaxWithdraw(vault, wallet)) !== null;
@@ -534,7 +534,7 @@ async function unpark(c: Ctx, i: Extract<ActionInput, { action: "unpark" }>): Pr
   if (most !== null) {
     if (most === 0n) {
       const acc = await indexerOf(c, g).get(`/intent/partners/vaults/${vault.toLowerCase()}/accounting`, accounting);
-      if (acc.settlement?.due) return settleFirst(c, vault, blank, title, name, indexerOf(c, g));
+      if (acc.settlement?.due) return settleFirst(c, vault, blank, title, name, g);
       throw new ApiError("NOTHING_TO_WITHDRAW", "The vault can pay this wallet nothing now: it holds none of the wallet's, or its cash is lent out. Unpark waits for its loans to repay or mature", 409, true);
     }
     amount = i.amount ? BigInt(i.amount) : most;
@@ -608,8 +608,13 @@ export function parkPlan(c: Ctx, input: Extract<ActionInput, { action: "park" | 
 
 // ---- Batches ------------------------------------------------------------------------------------------------------
 
-/** One call of a park's or an unpark's batch, in order: what a wallet's `wallet_sendCalls` (EIP-5792) takes, and its label. */
-export interface ParkCall { label: string; kind: "approve" | "action"; final: boolean; to: Address; data: Hex; value: bigint }
+/**
+ * One call of a park's or an unpark's batch, in order: what a wallet's `wallet_sendCalls` (EIP-5792) takes, and its label.
+ * `extraGas`: what a caller sending this call on its own adds to its estimate for its limit, 0n for most. A partner vault's
+ * deposit, withdrawal or settle claims for each open reward record or loan it books, which an estimate can miss
+ * (src/gas.ts). A batch carries no limit per call: its gas is the wallet's to price.
+ */
+export interface ParkCall { label: string; kind: "approve" | "action"; final: boolean; to: Address; data: Hex; value: bigint; extraGas: bigint }
 /**
  * A park or an unpark as one batch: every call in order, built from one reading of the chain, for a wallet that sends
  * several at once (EIP-5792 `wallet_sendCalls`) or sent one by one, each once the one before is mined. `again`: the
@@ -631,7 +636,7 @@ export async function parkBatch(c: Ctx, input: Extract<ActionInput, { action: "p
   if (failed >= 0) throw new ApiError("SIMULATION_FAILED", `${p.steps[failed]!.label} would revert now; check the position, balances and the vault`, 409);
   return {
     action: input.action, wallet, summary: p.summary, view: p.view, notes: p.notes,
-    calls: built.map((t, n) => ({ label: p.steps[n]!.label, kind: p.steps[n]!.kind, final: p.steps[n]!.final, to: t.to, data: t.data, value: t.value })),
+    calls: built.map((t, n) => ({ label: p.steps[n]!.label, kind: p.steps[n]!.kind, final: p.steps[n]!.final, to: t.to, data: t.data, value: t.value, extraGas: p.steps[n]!.extraGas ?? 0n })),
     ...(p.again ? { again: true as const } : {}),
   };
 }

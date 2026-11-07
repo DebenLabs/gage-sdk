@@ -8,7 +8,7 @@ import { encodeFunctionData, erc20Abi, getAddress, parseEventLogs, zeroHash, typ
 import { cashoutRouterAbi, engineAbi, loopRouterAbi, partnerVaultAbi, putRouterAbi, reputationAbi, rewardsAbi, rolloverRouterAbi } from "./abi.js";
 import { askCashoutSale, directRoutes, ROUTE_MARGIN_BPS, routeNet, type CashoutSale, type CashoutWant } from "./cashout.js";
 import type { AutoRollState, Chain, TickSource, VaultBook } from "./chain.js";
-import { accounting, claimablePockets, eachRead, everyPartnerVault, holding, indexerOf, loanRecord, partnerVaults, previewAnswer, vaultName, walletLoans, walletRights, type PartnerVault } from "./data.js";
+import { accounting, claimablePockets, eachRead, everyPartnerVault, holding, indexerOf, indexSilent, loanProven, loanRecord, partnerOnIndex, previewAnswer, vaultName, walletLoans, walletRights, type PartnerVault } from "./data.js";
 import {
   assetOf, engineOf, generationOfCore, lendAssetOf, lendsMore, putGenerations, retiredCore, rolloverRouterOf,
   type Asset, type Deployment, type Engine, type Generation, type LendAsset, type LoopPool, type ParkKind, type ParkPool,
@@ -24,6 +24,7 @@ import { allocate, cheapestWhole, instant, loopPlan, preview, rollFigures, rollP
 import { lpPlan, type LpView } from "./lpPlans.js";
 import { parkPlan } from "./park.js";
 import { earnExitCancel, earnExitCollect, earnExitList, earnExitNow, exitCollectStep, exitOwed } from "./earnExit.js";
+import { createVaultPlan, manageVaultPlan, type VaultView } from "./vaults.js";
 import { rehypoExitNow } from "./rehypo.js";
 import { listsWithRewards } from "./rewards.js";
 import type { Preview } from "./preview.js";
@@ -44,6 +45,8 @@ export interface Ctx {
   indexerAt?: (origin: string) => Upstream;
   /** Pools a caller adds to the deployment's for park and unpark (D334, `createGage({ parkPools })`): a DEX's own. */
   parkPools?: readonly ParkPool[];
+  /** gage's index has not answered which generations were found since the release (src/discovery.ts): an engine not named yet may be one. */
+  generationsUnread?: boolean;
 }
 export interface Row { label: string; value: string }
 export interface Summary { title: string; rows: Row[] }
@@ -72,14 +75,17 @@ export type View =
     own: string; buy: string; multiple: number; principal: string; fee: string; cap: string; term: number; feeBps: number; costBps: number; maxCostBps: number;
     maxCost: string; ownValueUSDG: string; cashUSDG: string;
   })
-  | ({ action: "cancel" } & TokenRef & { loanId: string; collateral: string })
-  | ({ action: "reclaim" } & TokenRef & InAsset & { loanId: string; collateral: string; cap: string; endsAt: number })
+  /** `collateralPaused`: the token cannot move now (D213), so the plan ends with the cancellation or repayment, and the pickup waits. */
+  | ({ action: "cancel" } & TokenRef & { loanId: string; collateral: string; collateralPaused?: true })
+  | ({ action: "reclaim" } & TokenRef & InAsset & { loanId: string; collateral: string; cap: string; endsAt: number; collateralPaused?: true })
   | ({ action: "cash_out" } & TokenRef & InAsset & {
     loanId: string; collateral: string; cap: string; gross: string; financeFee: string; fee: string; net: string; minimumNet: string; source: string | null;
   })
   | ({ action: "roll" } & TokenRef & InAsset & {
     loanId: string; collateral: string; oldPrincipal: string; oldCap: string; endsAt: number;
     principal: string; cap: string; term: number; fee: string; feeBps: number; payout: string; topUp: string; surplus: string;
+    /** The approval: this loan's repayment and what the wallet's `otherAutoRolls` other loans rolling by themselves through the router still need. */
+    allowance: string; otherAutoRolls: number;
   })
   | ({ action: "auto_roll" } & TokenRef & InAsset & {
     loanId: string; principal: string; term: number; maxCost: string; maxTopUp: string; rolls: number; window: number; until: number;
@@ -109,7 +115,7 @@ export type View =
     allowance: string; passThrough: string; otherAutoRolls: number; executor: Address;
   })
   | ({ action: "put_cancel_auto_roll" } & TokenRef & { loanId: string; rollsLeft: number })
-  | ({ action: "earn_deposit"; vault: Address; name: string; amount: string; minShares: string; feeBps: number } & InAsset)
+  | ({ action: "earn_deposit"; vault: Address; name: string; manager: string; amount: string; minShares: string; feeBps: number } & InAsset)
   | ({ action: "earn_redeem"; vault: Address; name: string; shares: string; assets: string; minAssets: string; all: boolean } & InAsset)
   | {
     action: "collect"; usdg: string; collateral: (TokenRef & { amount: string })[]; earnings: string; sgage: string;
@@ -173,15 +179,21 @@ export type View =
   /** What the exit desks owe the wallet from its exits' sales, by desk and asset. */
   | { action: "earn_exit_collect"; owed: (TokenRef & { desk: Address; amount: string })[] }
   /** The LP lane's actions (docs/api.md "LP lane"), all in USDG: lpPlans.ts. */
-  | LpView;
+  | LpView
+  /** A partner vault created and managed: vaults.ts. */
+  | VaultView;
 /** The loan an action opened, read from its own receipt: a listing's id, a loop's, a roll's new loan. */
 export interface Made { engine: Address; loanId: string }
 export interface Plan {
   summary: Summary; view: View; steps: Step[]; notes: string[];
   /** For an action that opens a loan: its id from the final step's logs, or null when they name none for this wallet. */
   made?: (logs: readonly Log[]) => Made | null;
+  /** For an action that creates a partner vault: its address from the final step's logs, or null when they name none for this wallet. */
+  vault?: (logs: readonly Log[]) => Address | null;
   /** The steps come first, then the action is planned again from the chain: a vault's settle before a deposit. */
   again?: true;
+  /** Part of what the plan reads did not answer: what it lists stands, and more may be ready once it answers. */
+  partial?: true;
   /**
    * Every step is built from one reading of the chain and they go together (park and unpark, D334): in order, each once
    * the one before is mined, or as one batch (EIP-5792). Planned again between them, the action would read a position
@@ -192,7 +204,7 @@ export interface Plan {
   preview?: Preview;
 }
 /** The first log of `abi`'s `eventName` that `address` emitted and `match` accepts, among a receipt's logs. */
-function eventOf<const A extends readonly unknown[]>(abi: A, eventName: string, address: Address, logs: readonly Log[], match: (args: Record<string, unknown>) => boolean) {
+export function eventOf<const A extends readonly unknown[]>(abi: A, eventName: string, address: Address, logs: readonly Log[], match: (args: Record<string, unknown>) => boolean) {
   const own = logs.filter((l) => same(l.address, address));
   const parsed = parseEventLogs({ abi: abi as never, eventName, logs: own }) as unknown as { args: Record<string, unknown> }[];
   return parsed.find((l) => match(l.args))?.args ?? null;
@@ -208,6 +220,8 @@ const SGAGE_DUST = 10n ** 12n;
 const NO_LIQUIDATION = (what: string) => `The lenders keep the ${what}. Nothing else is taken, and the loan is never closed early.`;
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+/** The chain's clock, which judges a loan's end: the machine asking may be ahead of it or behind. */
+const chainNow = async (c: Ctx) => (await c.chain.head()).timestamp;
 const tx = (to: Address, data: Hex): Tx => ({ to, data, value: 0n });
 const call = (label: string, to: Address, data: Hex, final = false): Step => ({ label, kind: "action", final, build: () => Promise.resolve(tx(to, data)) });
 
@@ -234,8 +248,8 @@ async function collateralRef(c: Ctx, token: Address): Promise<TokenRef> {
   // A put's pledge (docs/api.md "Puts on lend-asset generations"): USDG, at its own decimals.
   if (same(token, c.d.usdg)) return refOf(c.d.generations[0]!.lendAsset);
   const named = c.d.generations.flatMap((g) => g.collateral).find((x) => same(x.token, token));
-  if (!named) return tokenRef(c, token);
-  try { return { token, symbol: named.symbol, decimals: (await c.chain.tokenInfo(named.token)).decimals }; } catch { return tokenRef(c, token); }
+  // Named or not, its decimals are the token's own: a token listed nowhere still counts in them.
+  try { return { token, symbol: named?.symbol ?? "tokens", decimals: (await c.chain.tokenInfo(token)).decimals }; } catch { return tokenRef(c, token); }
 }
 export const refOf = (a: LendAsset): TokenRef => ({ token: a.token, symbol: a.symbol, decimals: a.decimals });
 /** The asset fields a view adds once the release makes a lend asset public (D251); none before, so it reads as it did. */
@@ -251,6 +265,7 @@ export function generationFor(c: Ctx, lendAsset?: string): Generation {
   const usdg = c.d.generations[0]!;
   if (!lendAsset || same(lendAsset, usdg.lendAsset.token)) return usdg;
   const g = c.d.generations.find((x) => same(x.lendAsset.token, lendAsset));
+  if (!g && c.generationsUnread) throw new ApiError("UNAVAILABLE", "gage's index has not said which assets it lends yet; try again shortly", 503, true);
   requireThat(g, "UNKNOWN_LEND_ASSET", "gage lends no such asset now; gage_capabilities lists the ones it lends", 400);
   return g;
 }
@@ -410,6 +425,21 @@ function notAccepted(p: { acceptFloorTenths: number | null; acceptMaxPrincipal: 
     { details: { lowestCostBps: p.acceptFloorTenths === null ? null : p.acceptFloorTenths / 10, largestPrincipal: largest?.toString() ?? null } });
 }
 
+/**
+ * What a listing's preview answers when its model withholds a cost: the pledge's own curve says when that is a loan larger
+ * than the pledge supports, which asking again never clears, and the most it does; otherwise that refusal stands.
+ */
+async function tooThin(c: Ctx, g: Generation, a: Asset, collateral: bigint, principal: bigint, term: number, error: unknown): Promise<never> {
+  if (error instanceof ApiError && error.code === "PRICING_UNAVAILABLE") {
+    const sized = await suggestCurve(c.rates, { chainId: c.d.chainId, engine: g.core.engine, token: a.token, collateral, term, maxRepaymentBps: repaymentLimitBps(a.lane), ...(g.primary ? {} : { asset: g.lendAsset.token }) }).catch(() => null);
+    const most = sized?.curve.at(-1)?.principal;
+    if (most !== undefined && most < principal) {
+      throw new ApiError("PRINCIPAL_TOO_HIGH", `This pledge supports a loan of at most ${f.money(most, g.lendAsset)} now; borrow less or pledge more`, 409, false, { details: { maxPrincipal: most.toString() } });
+    }
+  }
+  throw error;
+}
+
 async function borrow(c: Ctx, i: Extract<ActionInput, { action: "borrow" }>): Promise<Plan> {
   // The generation the loan is borrowed from (D251): its core lists it, its registry admits it, its asset pays it out.
   const wallet = i.wallet as Address, g = generationFor(c, i.lendAsset), cash = g.lendAsset, core = g.core.engine;
@@ -420,7 +450,10 @@ async function borrow(c: Ctx, i: Extract<ActionInput, { action: "borrow" }>): Pr
   await sameCoreAsset(c, core, cash);
   const terms: Terms = { token: a.token, collateral, principal, cap, term: i.term };
   // The pledge's worth in USDG draws the review page's curve: a loan in another asset draws none, so asks none.
-  const [funded, value] = await Promise.all([preview(c.rates, core, terms, wallet), g.primary ? pledgeValue(c, core, a.token, collateral, i.term, wallet) : null]);
+  const [funded, value] = await Promise.all([
+    preview(c.rates, core, terms, wallet).catch((error: unknown) => tooThin(c, g, a, collateral, principal, i.term, error)),
+    g.primary ? pledgeValue(c, core, a.token, collateral, i.term, wallet) : null,
+  ]);
   // D247 in gage-sdk (D384): never a listing no partner vault's settings take; one that fits a vault without the cash now lists.
   if (funded.accepts === false) notAccepted(funded, cash);
   const fee = (principal * BigInt(feeBps)) / 10_000n, what = f.token(collateral, a.decimals, a.symbol);
@@ -562,7 +595,10 @@ export async function leverageTerms(c: Ctx, token: string, own: bigint, multiple
   requireThat(router, "LEVERAGE_CLOSED", "Leverage is not open on this deployment");
   const a = await collateralOf(c, g, token);
   requireThat(g.loopPools.get(a.token.toLowerCase())?.length, "NO_LEVERAGE_POOL", `Leverage does not buy ${a.symbol}`);
-  const borrower = wallet ?? router;
+  // With no wallet yet, read as a listing's own preview reads it: the router is a filler, which no vault funds.
+  const borrower = wallet ?? g.core.engine;
+  const offered = await termsOf(c, g.core.registry);
+  requireThat(offered.includes(term), "TERM_NOT_ALLOWED", `Allowed terms: ${offered.map(f.days).join(", ")}`);
   const q = await instant(c.rates, g.core.engine, a.token, own, term, wallet);
   const t = BigInt(Math.round(multiple * 10_000));
   const pledge = q.collateral, buy = (pledge * (t - 10_000n)) / 10_000n;
@@ -717,13 +753,24 @@ async function leverage(c: Ctx, i: Extract<ActionInput, { action: "leverage" }>)
 }
 
 /**
- * A loan of the wallet's, private loans refused as unknown, whether the index marks them or only the chain tells (M7); on
- * the current core unless another engine is named.
+ * The engine a caller names, the current core when none is; refused only where the release says so: while the generations
+ * found since it could not be read, an engine it does not name may be one of theirs.
  */
-async function ownLoan(c: Ctx, wallet: Address, id: string, engineAddress?: string): Promise<{ engine: Engine; loan: Awaited<ReturnType<Chain["loan"]>> }> {
-  const engine = engineAddress ? engineOf(c.d, engineAddress) : c.d.core;
+export function engineNamed(c: Ctx, engineAddress?: string): Engine {
+  if (!engineAddress) return c.d.core;
+  const engine = engineOf(c.d, engineAddress);
+  if (!engine && c.generationsUnread) throw new ApiError("UNAVAILABLE", "gage's index has not said whether this engine is gage's yet; try again shortly", 503, true);
   requireThat(engine, "UNKNOWN_ENGINE", "This engine is not gage's", 404);
-  await loanRecord(c, engine.engine, id);
+  return engine;
+}
+
+/**
+ * A loan of the wallet's, private loans refused as unknown, whether the index marks them or only the chain tells (M7); on
+ * the current core unless another engine is named. `record` says it may be shown: gage's index, unless a plan passes another.
+ */
+async function ownLoan(c: Ctx, wallet: Address, id: string, engineAddress?: string, record: (engine: Engine) => Promise<unknown> = (e) => loanRecord(c, e.engine, id)): Promise<{ engine: Engine; loan: Awaited<ReturnType<Chain["loan"]>> }> {
+  const engine = engineNamed(c, engineAddress);
+  await record(engine);
   const loan = await c.chain.loan(engine.engine, BigInt(id));
   requireThat(same(loan.originator, wallet) || same(loan.collateralBeneficiary, wallet) || same(await c.chain.ownerOf(engine.engine, BigInt(id)) ?? "0x", wallet),
     "NOT_YOUR_LOAN", "This wallet did not borrow this loan", 403);
@@ -733,58 +780,96 @@ async function ownLoan(c: Ctx, wallet: Address, id: string, engineAddress?: stri
 const takeBack = (engine: Engine, id: bigint, wallet: Address) =>
   call("Receive collateral", engine.engine, encodeFunctionData({ abi: engineAbi, functionName: "withdrawCollateral", args: [id, wallet] }));
 
+/**
+ * Whether `token` is paused now (D213, D447): it cannot move, so the core refuses every step that moves it while a
+ * repayment or a cancellation, which moves none of it, still goes through. A step that takes it back is then left out of
+ * the plan: a wallet sending a plan's steps as one batch would otherwise fail all of them, and with no grace a repayment
+ * that could not be sent costs the pledge. A read that fails is no pause: the step it would leave out only reverts by
+ * itself, and nothing is refused on it. A Stock Token's alone, as the release lists them: another token's `paused()` may
+ * mean anything, and would hide its pickup from every plan.
+ */
+export const pausedNow = async (c: Ctx, token: Address) => assetOf(c.d, token)?.lane === "STOCK" && (await c.chain.tokensPaused([token]).catch(() => [false]))[0] === true;
+const PAUSED_STAYS = (what: string) => `The token is paused, so ${what} stays in the loan's account, still yours, until it resumes. Reclaim it, or collect, then.`;
+/** The refusal of a step that would move a paused token, which may be asked again once it resumes. */
+function refusePaused(paused: boolean, what: string) {
+  requireThat(!paused, "TOKEN_PAUSED", `The token is paused, so ${what} cannot move now; ask again once it resumes`);
+}
+
 async function cancel(c: Ctx, i: Extract<ActionInput, { action: "cancel" }>): Promise<Plan> {
   const wallet = i.wallet as Address, id = BigInt(i.loanId);
   const { engine, loan } = await ownLoan(c, wallet, i.loanId, i.engine);
   const ref = await collateralRef(c, loan.token), known = ref.symbol !== "tokens" || assetOf(c.d, loan.token);
   const what = known ? f.token(loan.collateral, ref.decimals, ref.symbol) : "collateral";
-  const steps: Step[] = [];
+  const steps: Step[] = [], notes: string[] = [];
+  let held = false;
   if (loan.state === 1) {
     requireThat(same(loan.originator, wallet), "NOT_YOUR_LOAN", "Only the borrower cancels a listing", 403);
-    steps.push(call("Cancel listing", engine.engine, encodeFunctionData({ abi: engineAbi, functionName: "cancelFunding", args: [id] })), takeBack(engine, id, wallet));
+    held = await pausedNow(c, loan.token);
+    steps.push(call("Cancel listing", engine.engine, encodeFunctionData({ abi: engineAbi, functionName: "cancelFunding", args: [id] }), held), ...(held ? [] : [takeBack(engine, id, wallet)]));
+    if (held) notes.push(PAUSED_STAYS(what));
   } else {
     requireThat(loan.state === 5, "NOT_CANCELLABLE", "Only a loan still waiting for funding can be cancelled");
-    if (same(loan.collateralBeneficiary, wallet) && !await c.chain.released(loan.account)) steps.push(takeBack(engine, id, wallet));
+    if (same(loan.collateralBeneficiary, wallet) && !await c.chain.released(loan.account)) {
+      refusePaused(await pausedNow(c, loan.token), what);
+      steps.push(takeBack(engine, id, wallet));
+    }
   }
   return {
-    view: { action: "cancel", ...ref, loanId: i.loanId, collateral: loan.collateral.toString() },
+    view: { action: "cancel", ...ref, loanId: i.loanId, collateral: loan.collateral.toString(), ...(held ? { collateralPaused: true as const } : {}) },
     summary: { title: `Cancel loan #${i.loanId} and take back ${what}`, rows: [
       { label: "Loan", value: `#${i.loanId}, waiting for funding` },
       { label: "Back to your wallet", value: what },
       { label: "Lenders' contributions", value: "Returned to them" },
     ] },
-    steps, notes: [],
+    steps, notes,
   };
 }
 
 async function reclaim(c: Ctx, i: Extract<ActionInput, { action: "reclaim" }>): Promise<Plan> {
   const wallet = i.wallet as Address, id = BigInt(i.loanId);
-  const { engine, loan } = await ownLoan(c, wallet, i.loanId, i.engine);
+  // A term runs out whether gage's index answers or not: with it silent, the chain's proof serves (D439).
+  const { engine, loan } = await ownLoan(c, wallet, i.loanId, i.engine, (e) => loanProven(c, e, i.loanId));
   const ref = await collateralRef(c, loan.token), known = ref.symbol !== "tokens" || assetOf(c.d, loan.token);
   const what = known ? f.token(loan.collateral, ref.decimals, ref.symbol) : "collateral";
   // Repaid in the asset the loan's core pays in (D251): USDG, or its generation's lend asset.
   const pay = lendAssetOf(c.d, engine.engine);
-  const ends = loan.fundedAt + loan.term;
-  const steps: Step[] = [];
+  let ends = loan.fundedAt + loan.term;
+  const steps: Step[] = [], notes: string[] = [];
+  let held = false;
   if (loan.state === 2) {
     requireThat(same(await c.chain.ownerOf(engine.engine, id) ?? "0x", wallet), "NOT_YOUR_LOAN", "This wallet does not hold the loan's reclaim right", 403);
-    requireThat(c.now() < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+    const now = await chainNow(c);
+    // The chain takes the repayment until term + GRACE (`GageV2Vault._windowEnd`). Inside the term a read that fails costs
+    // nothing, the term's end being the earlier; past it, only the chain's answer says the lenders keep the collateral.
+    const grace = await (now < ends ? c.chain.coreGrace(engine.engine).catch(() => 0) : c.chain.coreGrace(engine.engine));
+    const pastTerm = now >= ends;
+    ends += grace;
+    requireThat(now < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+    if (pastTerm) notes.push(`The term has ended, but this core still takes the repayment until ${f.date(ends)}. After that the lenders keep the collateral.`);
     await sameCoreAsset(c, engine.engine, pay);
     requireThat(await c.chain.balance(pay.token, wallet) >= loan.cap, "INSUFFICIENT_BALANCE", `Repaying takes ${f.owedIn(loan.cap, pay)}; the wallet holds less`);
-    steps.push(...await approval(c, pay.token, pay.symbol, wallet, engine.engine, loan.cap),
-      call("Repay", engine.engine, encodeFunctionData({ abi: engineAbi, functionName: "reclaim", args: [id, wallet] })), takeBack(engine, id, wallet));
+    const approve = await approval(c, pay.token, pay.symbol, wallet, engine.engine, loan.cap);
+    // Never refused on this: the chain takes a repayment to its last second, and a refusal here would cost the pledge.
+    if (approve.length && ends - now < 60) notes.push("This loan ends in under a minute: send the approval and the repayment at once. The repayment must be mined before the term ends, or the lenders keep the collateral.");
+    held = await pausedNow(c, loan.token);
+    steps.push(...approve,
+      call("Repay", engine.engine, encodeFunctionData({ abi: engineAbi, functionName: "reclaim", args: [id, wallet] }), held), ...(held ? [] : [takeBack(engine, id, wallet)]));
+    if (held) notes.push(PAUSED_STAYS(what));
   } else {
     requireThat(loan.state === 3, "NOT_REPAYABLE", loan.state === 4 ? "The term ended unpaid: the lenders keep the collateral" : "This loan is not running");
-    if (same(loan.collateralBeneficiary, wallet) && !await c.chain.released(loan.account)) steps.push(takeBack(engine, id, wallet));
+    if (same(loan.collateralBeneficiary, wallet) && !await c.chain.released(loan.account)) {
+      refusePaused(await pausedNow(c, loan.token), what);
+      steps.push(takeBack(engine, id, wallet));
+    }
   }
   return {
-    view: { action: "reclaim", ...ref, loanId: i.loanId, collateral: loan.collateral.toString(), cap: loan.cap.toString(), endsAt: ends, ...inAsset(c, pay, engine.engine) },
+    view: { action: "reclaim", ...ref, loanId: i.loanId, collateral: loan.collateral.toString(), cap: loan.cap.toString(), endsAt: ends, ...inAsset(c, pay, engine.engine), ...(held ? { collateralPaused: true as const } : {}) },
     summary: { title: `Repay loan #${i.loanId} and take back ${what}`, rows: [
       { label: "You pay", value: f.owedIn(loan.cap, pay) },
       { label: "Back to your wallet", value: what },
       ...(loan.fundedAt > 0 ? [{ label: "Repay before", value: `${f.date(ends)} (the loan's last day)` }] : []),
     ] },
-    steps, notes: [],
+    steps, notes,
   };
 }
 
@@ -822,6 +907,18 @@ async function allowedTerm(c: Ctx, engine: Engine, term: number) {
 }
 
 /**
+ * Waits, a few seconds at most, for this node's head to reach a signed plan's date (D447). The rates service dates a plan by
+ * the block it read, and the chain refuses one dated ahead of its head (`NOT_YET_VALID`): a node a moment behind that
+ * one would refuse the simulation of a plan that is good, with no word of why. Past the wait, the simulation says what it says.
+ */
+async function headReaches(c: Ctx, at: number, tries = 8, waitMs = 500) {
+  for (let n = 0; n < tries; n += 1) {
+    if ((await c.chain.head()).timestamp >= at) return;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+}
+
+/**
  * Rolling a running loan over (D285): the new loan, on the same pledge and of the same size, repays this one in full in
  * one transaction, and the wallet adds what its payout leaves short of this loan's repayment (the top-up), or keeps what
  * is over. The reclaim right is approved to the generation's rollover router for this loan, the old repayment in the
@@ -836,10 +933,14 @@ async function rollOver(c: Ctx, i: Extract<ActionInput, { action: "roll" }>): Pr
   const router = rollRouterOf(c, engine, true);
   requireThat(loan.state === 2, "NOT_ROLLABLE", loan.state === 1 ? "The loan is still waiting for funding: nothing to roll yet" : "Only a running loan can be rolled over");
   await holdsRight(c, engine, id, wallet);
-  const ends = loan.fundedAt + loan.term, term = i.term ?? loan.term;
-  requireThat(c.now() < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+  const ends = loan.fundedAt + loan.term, term = i.term ?? loan.term, head = await chainNow(c);
+  requireThat(head < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
   requireThat(!await c.chain.rolloverPaused(router), "ROLLOVER_PAUSED", "Rolling over is paused now");
   await allowedTerm(c, engine, term);
+  // A term gage-sdk does not offer is a 1-day loan's on mainnet: its one approval is its auto-settle (D232), which a roll's would take the place of, so it rolls on the site.
+  requireThat((await termsOf(c, engine.registry)).includes(loan.term), "ROLLOVER_CLOSED", "A loan of this term is rolled on gage.cash, where its automatic settlement stays on");
+  // A roll moves the pledge from this loan's account to the new one's: repaying still works while the token is paused.
+  refusePaused(await pausedNow(c, loan.token), "its pledge");
   const pay = lendAssetOf(c.d, engine.engine);
   await sameCoreAsset(c, engine.engine, pay);
   const ask = { engine: engine.engine, loanId: id, borrower: wallet, term, oldPrincipal: loan.principal, oldCap: loan.cap };
@@ -853,17 +954,18 @@ async function rollOver(c: Ctx, i: Extract<ActionInput, { action: "roll" }>): Pr
   const send = async (): Promise<Tx> => {
     const r = await rollPlan(c.rates, { ...ask, router, token: loan.token, collateral: loan.collateral, now: c.now });
     requireThat(r.wallet.topUp <= w.topUp && r.terms.cap <= t.cap, "PRICE_MOVED", "The roll costs more now than when it was prepared; prepare it again");
+    await headReaches(c, Math.max(...r.plans.map((p) => p.issuedAt)));
     // The new loan is listed and filled in the roll: its sGAGE only where the core's ledger pays it (R2 option C).
     const withRewards = await listsWithRewards(c.chain, engine, r.terms.term, r.terms.principal);
     return tx(router, encodeFunctionData({ abi: rolloverRouterAbi, functionName: "roll",
       args: [{ loanId: id, maxTopUp: w.topUp, withRewards, pricing: r.pricing }, r.plans, r.signatures, r.plans[0]!.allocations.map((a) => a.maxReserveShares)] }));
   };
-  const early = ends - c.now() > 86_400;
+  const early = ends - head > 86_400;
   return {
     view: {
       action: "roll", ...ref, loanId: i.loanId, collateral: loan.collateral.toString(), oldPrincipal: loan.principal.toString(), oldCap: loan.cap.toString(), endsAt: ends,
       principal: t.principal.toString(), cap: t.cap.toString(), term: t.term, fee: w.fee.toString(), feeBps: w.feeBps, payout: w.payout.toString(),
-      topUp: w.topUp.toString(), surplus: w.surplus.toString(), ...inAsset(c, pay, engine.engine),
+      topUp: w.topUp.toString(), surplus: w.surplus.toString(), allowance: withOthers(loan.cap, others.need).toString(), otherAutoRolls: others.count, ...inAsset(c, pay, engine.engine),
     },
     summary: {
       title: `Roll loan #${i.loanId} over into a new ${f.days(t.term)} loan`,
@@ -914,10 +1016,14 @@ async function cashOut(c: Ctx, i: Extract<ActionInput, { action: "cash_out" }>):
   requireThat(loan.state === 2, "NOT_RUNNING", "Only a running loan can be cashed out");
   await holdsRight(c, engine, id, wallet);
   const ends = loan.fundedAt + loan.term;
-  requireThat(c.now() < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+  requireThat(await chainNow(c) < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+  // A sale moves the pledge: repaying still works while the token is paused.
+  refusePaused(await pausedNow(c, loan.token), "its pledge");
   const pay = lendAssetOf(c.d, engine.engine);
   requireThat(!same(loan.token, pay.token), "CASHOUT_CLOSED", "This loan's pledge is the asset it is repaid in: repay it instead");
   await sameCoreAsset(c, engine.engine, pay);
+  // A router with no flash pool (a v4 router) takes another sale than this one builds.
+  requireThat(await c.chain.cashoutFlashPool(router) !== null, "CASHOUT_CLOSED", "Loans on this core cash out on gage.cash only");
   const want = (): CashoutWant => ({
     chainId: c.d.chainId, engine: engine.engine, router, loanId: id, token: loan.token, collateral: loan.collateral, cap: loan.cap, asset: pay.token,
     slippageBps: i.maxSlippageBps ?? 50, now: c.now(),
@@ -930,11 +1036,12 @@ async function cashOut(c: Ctx, i: Extract<ActionInput, { action: "cash_out" }>):
   // The least the caller accepts: the sale is refused under it now, and the transaction reverts under it.
   const least = i.minNet ? BigInt(i.minNet) : 0n;
   requireThat(sale.netAtQuote >= least, "BELOW_MIN_NET", `The sale pays about ${f.money(sale.netAtQuote, pay)} now, under the least you named`, 409, { details: { net: sale.netAtQuote.toString() } });
-  const floor = (x: CashoutSale) => (x.minimumNet > least ? x.minimumNet : least);
+  // What the plan says the wallet gets at least, and what the transaction is held to, however the quote moves before it is sent.
+  const planned = sale.minimumNet > least ? sale.minimumNet : least;
   // gage's own direct routes for the collateral, into a USDG core's asset: what the sale is weighed against when sent.
   const routes = same(pay.token, c.d.usdg) ? directRoutes(loan.token, pay.token, c.d.loopPools.get(loan.token.toLowerCase()) ?? []) : [];
   const exit = (x: CashoutSale): Tx => tx(router, encodeFunctionData({ abi: cashoutRouterAbi, functionName: "cashOutVia", args: [{
-    loanId: id, recipient: wallet, minimumNet: floor(x), maxFinanceFee: x.maxFinanceFee, deadline: BigInt(x.deadline), executor: x.executor, data: x.data,
+    loanId: id, recipient: wallet, minimumNet: planned, maxFinanceFee: x.maxFinanceFee, deadline: BigInt(x.deadline), executor: x.executor, data: x.data,
     flashToken: x.flashToken, flashFee: x.flashFee, minUsdgOut: x.minOut,
   }] }));
   // Quoted again when it is sent, never paying less than planned or than the caller's least, nor clearly less than gage's
@@ -942,14 +1049,18 @@ async function cashOut(c: Ctx, i: Extract<ActionInput, { action: "cash_out" }>):
   const send = async (): Promise<Tx> => {
     // The right is approved to the router by now, so its routes can be simulated for the wallet.
     const reference = routes.length ? await routeNet(c.chain, router, id, wallet, loan.cap, c.now(), routes) : null;
-    let last: Tx | null = null, below = false;
+    let last: Tx | null = null, below = false, answered = false;
     for (const sources of ["all", "pools"] as const) {
       const x = await askCashoutSale(valuation, want(), sources);
-      if (!x || x.minimumNet < sale.minimumNet || x.netAtQuote < least || await c.chain.cashoutExecutorAllowed(router, x.executor) !== true) continue;
+      if (!x) continue;
+      answered = true;
+      // A quote lower than the plan's but still above its floor goes through, held to that floor.
+      if (x.netAtQuote < planned || await c.chain.cashoutExecutorAllowed(router, x.executor) !== true) continue;
       if (reference !== null && x.netAtQuote * 10_000n < reference * (10_000n - ROUTE_MARGIN_BPS)) { below = true; continue; }
       last = exit(x);
       try { await c.chain.simulate({ from: wallet, ...last }); return last; } catch { /* the next liquidity */ }
     }
+    if (!answered) throw new ApiError("SALE_UNAVAILABLE", "The aggregator did not answer a sale just now; prepare it again shortly", 503, true);
     requireThat(last || !below, "SALE_BELOW_ROUTE", "The aggregator's sale pays clearly less than gage's own route for this collateral now: cash out on gage.cash, which sells through it");
     requireThat(last, "PRICE_MOVED", "The sale pays less now than when it was prepared; prepare it again");
     throw new ApiError("SIMULATION_FAILED", "The sale would revert now; prepare it again shortly", 409);
@@ -960,7 +1071,7 @@ async function cashOut(c: Ctx, i: Extract<ActionInput, { action: "cash_out" }>):
   return {
     view: {
       action: "cash_out", ...ref, loanId: i.loanId, collateral: loan.collateral.toString(), cap: loan.cap.toString(), gross: sale.amountOut.toString(),
-      financeFee: sale.maxFinanceFee.toString(), fee: fee.toString(), net: sale.netAtQuote.toString(), minimumNet: floor(sale).toString(), source: sale.source,
+      financeFee: sale.maxFinanceFee.toString(), fee: fee.toString(), net: sale.netAtQuote.toString(), minimumNet: planned.toString(), source: sale.source,
       ...inAsset(c, pay, engine.engine),
     },
     summary: {
@@ -971,7 +1082,7 @@ async function cashOut(c: Ctx, i: Extract<ActionInput, { action: "cash_out" }>):
         { label: "Repaid to the lenders", value: f.owedIn(loan.cap, pay) },
         { label: "Flash loan fee", value: f.money(sale.maxFinanceFee, pay) },
         { label: "gage's fee", value: `${f.money(fee, pay)}, 0.5% of what remains` },
-        { label: "You receive", value: `About ${f.money(sale.netAtQuote, pay)}, at least ${f.money(floor(sale), pay)}` },
+        { label: "You receive", value: `About ${f.money(sale.netAtQuote, pay)}, at least ${f.money(planned, pay)}` },
       ],
     },
     steps: [
@@ -1038,7 +1149,7 @@ const shownCeil = (raw: bigint, a: Pick<LendAsset, "decimals" | "stable">) => {
 /**
  * Rolling over by itself (D285): a standing instruction for gage's keeper, who rolls the loan in its last hours into a
  * new loan of the same size and term, at most `maxCost` each (its fixed cost and fee, held on chain to the unit), up to
- * four times. Unlike every other action here it leaves standing approvals, said in the plan: the router may move every
+ * four times. With `put_auto_roll` alone among the actions here it leaves standing approvals, said in the plan: the router may move every
  * reclaim right of this wallet on this core, so the instruction follows each new loan, and spend the loan's asset for
  * the repayments of all four rolls and of the rolls the wallet's other loans rolling by themselves there still need
  * (`otherRolls`). Set while the loan waits for funding or runs, by the holder of its right.
@@ -1059,8 +1170,8 @@ async function autoRoll(c: Ctx, i: Extract<ActionInput, { action: "auto_roll" }>
   requireThat(loan.state === 1 || loan.state === 2, "NOT_ROLLABLE", "Only a loan waiting for funding or running can roll by itself");
   await holdsRight(c, engine, id, wallet);
   // A listing's end is not known until it is funded: the app counts it from its funding window, as here.
-  const end = loan.state === 2 ? loan.fundedAt + loan.term : c.now() + LISTING_SECONDS + loan.term;
-  requireThat(c.now() < end, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+  const head = await chainNow(c), end = loan.state === 2 ? loan.fundedAt + loan.term : head + LISTING_SECONDS + loan.term;
+  requireThat(head < end, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
   requireThat(!await c.chain.rolloverPaused(router), "ROLLOVER_PAUSED", "Rolling over is paused now");
   const pay = lendAssetOf(c.d, engine.engine);
   await sameCoreAsset(c, engine.engine, pay);
@@ -1230,7 +1341,7 @@ export async function putTerms(c: Ctx, g: Generation, own: bigint, size: number,
   const feeBps = await c.chain.feeBps(g.core.registry);
   const principal = principalFor(loopCap(quoted[0]!), feeBps);
   const fee = principal - loopPayout(principal, feeBps), spendable = loopSpendable(principal, principal - fee);
-  const priced = await priceExact(c, g, a, pledge, principal, term, wallet ?? router, (most) =>
+  const priced = await priceExact(c, g, a, pledge, principal, term, wallet ?? g.core.engine, (most) =>
     new ApiError("SIZE_TOO_HIGH", `A ${size}× put borrows ${f.money(principal, cash)}, more than its pledge supports now (at most ${f.money(most, cash)}); try a smaller size`, 409, false,
       { details: { maxPrincipal: most.toString() } }));
   const allocation = priced.preview.fills ? allocate(priced.preview.vaults) : null;
@@ -1318,7 +1429,7 @@ async function putClose(c: Ctx, i: Extract<ActionInput, { action: "put_close" }>
   requireThat(loan.state === 2, "NOT_RUNNING", "Only a running loan can be closed");
   await holdsRight(c, engine, id, wallet);
   const ends = loan.fundedAt + loan.term;
-  requireThat(c.now() < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+  requireThat(await chainNow(c) < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
   requireThat(!await putPaused(c, router), "PUT_PAUSED", "Closing and rolling through the put router is paused now; the loan can still be repaid");
   const pay = g.lendAsset;
   requireThat(!same(loan.token, pay.token), "PUT_CLOSED", "This loan's pledge is the asset it is repaid in: repay it instead");
@@ -1392,8 +1503,8 @@ async function putRoll(c: Ctx, i: Extract<ActionInput, { action: "put_roll" }>):
   const { g, router } = putRouterFor(c, engine, true);
   requireThat(loan.state === 2, "NOT_ROLLABLE", loan.state === 1 ? "The loan is still waiting for funding: nothing to roll yet" : "Only a running loan can be rolled over");
   await holdsRight(c, engine, id, wallet);
-  const ends = loan.fundedAt + loan.term, term = i.term ?? loan.term;
-  requireThat(c.now() < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+  const ends = loan.fundedAt + loan.term, term = i.term ?? loan.term, head = await chainNow(c);
+  requireThat(head < ends, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
   requireThat(!await putPaused(c, router), "PUT_PAUSED", "Closing and rolling through the put router is paused now; the loan can still be repaid");
   await allowedTerm(c, engine, term);
   const pay = g.lendAsset;
@@ -1434,7 +1545,7 @@ async function putRoll(c: Ctx, i: Extract<ActionInput, { action: "put_roll" }>):
     requireThat(fits, "PRICE_MOVED", `Buying the top-up costs more now than the ${pledgeText(c, ref, maxSpend)} approved for it; prepare the roll again`);
     throw new ApiError("SIMULATION_FAILED", "The roll would revert now through every pool; prepare it again shortly", 409);
   };
-  const what = pledgeText(c, ref, loan.collateral), early = ends - c.now() > 86_400;
+  const what = pledgeText(c, ref, loan.collateral), early = ends - head > 86_400;
   return {
     view: {
       action: "put_roll", ...ref, loanId: i.loanId, collateral: loan.collateral.toString(), oldPrincipal: loan.principal.toString(), oldCap: loan.cap.toString(), endsAt: ends,
@@ -1493,8 +1604,8 @@ async function putAutoRoll(c: Ctx, i: Extract<ActionInput, { action: "put_auto_r
   requireThat(loan.state === 1 || loan.state === 2, "NOT_ROLLABLE", "Only a loan waiting for funding or running can roll by itself");
   await holdsRight(c, engine, id, wallet);
   // A listing's end is not known until it is funded: the app counts it from its funding window, as here.
-  const end = loan.state === 2 ? loan.fundedAt + loan.term : c.now() + LISTING_SECONDS + loan.term;
-  requireThat(c.now() < end, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
+  const head = await chainNow(c), end = loan.state === 2 ? loan.fundedAt + loan.term : head + LISTING_SECONDS + loan.term;
+  requireThat(head < end, "TERM_ENDED", "The term has ended: the lenders keep the collateral");
   requireThat(!await putPaused(c, router), "PUT_PAUSED", "Closing and rolling through the put router is paused now; the loan can still be repaid");
   const pay = g.lendAsset;
   requireThat(!same(loan.token, pay.token), "PUT_CLOSED", "This loan's pledge is the asset it is repaid in: leave it with auto_roll");
@@ -1595,17 +1706,41 @@ async function putCancelAutoRoll(c: Ctx, i: Extract<ActionInput, { action: "put_
 
 /**
  * A partner vault of a current core, re-identified on chain (created by a public generation's factory, lending on that
- * generation's core), with its generation: the USDG one, or a lend asset's (D251); or of a retained generation, read
- * from that generation's own index, for its redemptions and claims.
+ * generation's core), with its generation: the USDG one, or a lend asset's (D251); or of a retained generation.
  */
-export async function partner(c: Ctx, vault: string): Promise<{ address: Address; v: PartnerVault; g: Generation }> {
+async function vaultOfRelease(c: Ctx, vault: string): Promise<{ address: Address; g: Generation }> {
   const address = vault as Address;
   let g: Generation | undefined;
   for (const x of [...c.d.generations, ...c.d.retired]) if (await c.chain.isVault(x.factory, address)) { g = x; break; }
   requireThat(g && same(await c.chain.vaultCore(address), g.core.engine), "UNKNOWN_VAULT", lendsMore(c.d) ? "This is not a partner vault of one of gage's current cores" : "This is not a partner vault of gage's current core", 404);
-  const v = (await partnerVaults(indexerOf(c, g), c.d, g)).find((x) => same(x.address, address));
+  return { address, g };
+}
+/** The vault's row in its generation's own index. */
+async function indexRow(c: Ctx, address: Address, g: Generation): Promise<PartnerVault> {
+  const v = await partnerOnIndex(indexerOf(c, g), c.d, g, address);
   requireThat(v, "UNKNOWN_VAULT", "This vault is not indexed yet", 404);
-  return { address, v, g };
+  return v;
+}
+/** A vault with its index's row, for what only that says: its fee and whether it takes deposits. */
+export async function listedPartner(c: Ctx, vault: string): Promise<{ address: Address; v: PartnerVault; g: Generation }> {
+  const { address, g } = await vaultOfRelease(c, vault);
+  return { address, v: await indexRow(c, address, g), g };
+}
+/** What a plan to leave a vault says of it. */
+export type VaultLabel = Pick<PartnerVault, "address" | "assets" | "categoryMask" | "mandateVersion" | "name" | "settings">;
+/**
+ * A vault a wallet leaves. With gage's index silent the vault itself says what the plan says of it (D439); a vault from
+ * before named limits answers none of that, and goes by its family's name, sized for a full book.
+ */
+export async function partner(c: Ctx, vault: string): Promise<{ address: Address; v: VaultLabel; g: Generation }> {
+  const { address, g } = await vaultOfRelease(c, vault);
+  try {
+    return { address, v: await indexRow(c, address, g), g };
+  } catch (error) {
+    if (!indexSilent(error)) throw error;
+    const s = await c.chain.vaultManager(address);
+    return { address, g, v: { address, assets: [], categoryMask: s?.categoryMask ?? 0, ...(s ? { name: s.name, mandateVersion: s.mandateVersion, settings: { bufferBps: s.bufferBps, paused: s.paused } } : {}) } };
+  }
 }
 /** The vault's virtual shares (`IntentVault.VIRTUAL_SHARES`): one whole token of any asset starts worth 10^18 shares. */
 export const VIRTUAL_SHARES = 10n ** 12n;
@@ -1641,11 +1776,22 @@ export function redeemableShares(held: bigint, value: bigint, a: Pick<LendAsset,
   return exact < lastHolder ? exact : lastHolder;
 }
 
+/**
+ * What a redemption sized to a vault's free cash leaves of it, bps: the share's value grows a little faster than the free
+ * cash each second a loan is out, so a redemption sized to the last unit passes only in the second it was read. One basis
+ * point held for a day on mainnet's largest vault. An LP vault's withdrawal of everything keeps it too (lpPlans.ts).
+ */
+export const FREE_CASH_MARGIN_BPS = 1n;
+
 /** The most shares a redemption from `book` may take while shares stay behind it: the largest s whose payment,
- * ⌊s × (totalAssets + ASSET_SCALE) / (totalSupply + VIRTUAL_SHARES)⌋, the free cash covers and leaves a raw unit. */
-function leavingSome(book: VaultBook, scale: bigint): bigint {
-  const limit = book.free < book.totalAssets - 1n ? book.free : book.totalAssets - 1n;
-  return limit < 0n ? 0n : ((limit + 1n) * (book.totalSupply + VIRTUAL_SHARES) - 1n) / (book.totalAssets + scale);
+ * ⌊s × (totalAssets + ASSET_SCALE) / (totalSupply + VIRTUAL_SHARES)⌋, the free cash covers and leaves a raw unit, less
+ * the margin where it is the free cash that binds, short of all the vault holds. */
+export function leavingSome(book: VaultBook, scale: bigint): bigint {
+  const short = book.free < book.totalAssets - 1n;
+  const limit = short ? book.free : book.totalAssets - 1n;
+  if (limit < 0n) return 0n;
+  const most = ((limit + 1n) * (book.totalSupply + VIRTUAL_SHARES) - 1n) / (book.totalAssets + scale);
+  return short ? most - (most * FREE_CASH_MARGIN_BPS) / 10_000n : most;
 }
 
 /** A full withdrawal sized without a book: every share at six decimals and while a share is worth what it started at
@@ -1655,7 +1801,7 @@ function lastHolderShares(held: bigint, value: bigint, scale: bigint): bigint {
   const dust = (scale * held + value - 1n) / value;
   return held > dust ? held - dust : 0n;
 }
-const slip = (quoted: bigint, maxBps = 50) => quoted - (quoted * BigInt(maxBps)) / 10_000n;
+export const slip = (quoted: bigint, maxBps = 50) => quoted - (quoted * BigInt(maxBps)) / 10_000n;
 const REFUSALS: Record<string, string> = {
   PAUSED: "The vault is paused", SETTLEMENT_DUE: "A loan of the vault must be settled first", IMPAIRED: "The vault is impaired",
   BELOW_MINIMUM: "Below the vault's minimum deposit", CAP_EXCEEDED: "Above the vault's deposit cap", ZERO_SHARES: "Too small to buy a share",
@@ -1671,9 +1817,8 @@ const MAX_SETTLE = 32;
  * deposit or redemption again from the chain. Booking a loan past its end unpaid writes it off, which lowers the share
  * price: a deposit then buys more shares, a redemption pays less, and its minimum is computed after.
  */
-export async function settleFirst(c: Ctx, vault: Address, view: View, title: string, name: string, indexer = c.indexer): Promise<Plan> {
-  const acc = await indexer.get(`/intent/partners/vaults/${vault.toLowerCase()}/accounting`, accounting);
-  const ids = (acc.settlement?.settleable ?? []).slice(0, MAX_SETTLE).map(BigInt);
+export async function settleFirst(c: Ctx, vault: Address, view: View, title: string, name: string, g: Generation): Promise<Plan> {
+  const ids = await settleable(c, vault, g);
   requireThat(ids.length, "SETTLEMENT_DUE", "A loan of the vault must be settled first, and none can be yet; try again shortly");
   return {
     view, summary: { title, rows: [{ label: "First", value: `Settle ${ids.length} loan${ids.length === 1 ? "" : "s"} of ${name}: a loan past its end must be booked before the vault takes deposits or pays out` }] },
@@ -1682,6 +1827,23 @@ export async function settleFirst(c: Ctx, vault: Address, view: View, title: str
     notes: ["Settling books each loan's outcome: one past its end unpaid is written off, which lowers the share price. Prepare again once it is mined; run() does so itself."],
     again: true,
   };
+}
+
+/**
+ * The loans a settle books: those gage's index names, or with it silent those the factory's exit desk names on chain
+ * (r13d, D439). A desk before r13d, or none, names none, so there is nothing to send until the index answers again.
+ */
+async function settleable(c: Ctx, vault: Address, g: Generation): Promise<bigint[]> {
+  try {
+    const acc = await indexerOf(c, g).get(`/intent/partners/vaults/${vault.toLowerCase()}/accounting`, accounting);
+    return (acc.settlement?.settleable ?? []).slice(0, MAX_SETTLE).map(BigInt);
+  } catch (error) {
+    if (!indexSilent(error)) throw error;
+    const desk = await c.chain.exitDeskOf(g.factory);
+    const ids = desk ? await c.chain.pendingSettlements(desk, vault) : [];
+    if (!ids.length) throw new ApiError("SETTLEMENT_DUE", "A loan of the vault must be settled first, and gage's index, which names it, does not answer; try again shortly", 409, true);
+    return ids.slice(0, MAX_SETTLE);
+  }
 }
 
 /**
@@ -1724,7 +1886,7 @@ export async function sameVaultAsset(c: Ctx, vault: Address, a: LendAsset) {
 async function earnDeposit(c: Ctx, i: Extract<ActionInput, { action: "earn_deposit" }>): Promise<Plan> {
   const wallet = i.wallet as Address, amount = BigInt(i.amount);
   // A vault takes and pays out its generation's asset (D251): USDG, or a lend asset.
-  const { address, v, g } = await partner(c, i.vault);
+  const { address, v, g } = await listedPartner(c, i.vault);
   const cash = g.lendAsset;
   requireThat(!g.retired, "FUNDING_CLOSED", "This vault's generation is retired: it takes no deposit, and pays out redemptions and claims");
   requireThat(v.fundingEnabled, "FUNDING_CLOSED", "This vault does not lend yet");
@@ -1733,8 +1895,8 @@ async function earnDeposit(c: Ctx, i: Extract<ActionInput, { action: "earn_depos
   const p = await index.get(`/intent/partners/vaults/${address.toLowerCase()}/preview?deposit=${amount}`, previewAnswer);
   if (p.refusal === "SETTLEMENT_DUE") {
     requireThat(await c.chain.balance(cash.token, wallet) >= amount, "INSUFFICIENT_BALANCE", `The wallet holds less than ${f.money(amount, cash)}`);
-    const view: View = { action: "earn_deposit", vault: address, name: vaultName(v, c.d), amount: amount.toString(), minShares: "0", feeBps: v.feeBps, ...inAsset(c, cash) };
-    return settleFirst(c, address, view, `Deposit ${f.money(amount, cash)} into ${vaultName(v, c.d)} (${f.short(address)})`, vaultName(v, c.d), index);
+    const view: View = { action: "earn_deposit", vault: address, name: vaultName(v, c.d), manager: v.curator, amount: amount.toString(), minShares: "0", feeBps: v.feeBps, ...inAsset(c, cash) };
+    return settleFirst(c, address, view, `Deposit ${f.money(amount, cash)} into ${vaultName(v, c.d)} (${f.short(address)})`, vaultName(v, c.d), g);
   }
   requireThat(!p.refusal, vaultRefusal(p.refusal), refusalWords(p.refusal, cash, g.primary) ?? "The vault refuses this deposit");
   const minShares = slip(BigInt(p.shares), i.maxSlippageBps);
@@ -1745,7 +1907,7 @@ async function earnDeposit(c: Ctx, i: Extract<ActionInput, { action: "earn_depos
   // The deposit claims for each of the vault's open reward records, whatever its estimate saw (src/gas.ts).
   const claims = await bookGas(c.chain, address, v.mandateVersion);
   return {
-    view: { action: "earn_deposit", vault: address, name: vaultName(v, c.d), amount: amount.toString(), minShares: minShares.toString(), feeBps: v.feeBps, ...inAsset(c, cash) },
+    view: { action: "earn_deposit", vault: address, name: vaultName(v, c.d), manager: v.curator, amount: amount.toString(), minShares: minShares.toString(), feeBps: v.feeBps, ...inAsset(c, cash) },
     summary: { title: `Deposit ${f.money(amount, cash)} into ${name}`, rows: [
       { label: "You deposit", value: f.money(amount, cash) },
       { label: "You receive at least", value: f.shares(minShares) },
@@ -1760,6 +1922,23 @@ async function earnDeposit(c: Ctx, i: Extract<ActionInput, { action: "earn_depos
   };
 }
 
+type Redemption = { assets: string; availableNow: string | null; refusal: string | null };
+/**
+ * A redemption as the vault would answer it now, for when gage's index is silent (D439): what its own book makes these
+ * shares worth, and the refusals the index would name, in its order (services/indexer `intent-partner-accounting`). The
+ * sizing above already holds them to the free cash and leaves a share behind a loan out, so those two need no refusal.
+ */
+async function redemptionOnChain(c: Ctx, vault: Address, wallet: Address, shares: bigint, held: bigint, book: VaultBook, worth: (n: bigint) => bigint): Promise<Redemption> {
+  const [earliest, head, most] = await Promise.all([c.chain.earliestMaturity(vault), c.chain.head(), c.chain.vaultMaxRedeem(vault, wallet)]);
+  const value = worth(shares), assets = value > book.totalAssets ? book.totalAssets : value;
+  const refusal = earliest <= head.timestamp ? "SETTLEMENT_DUE"
+    : shares === 0n || shares > book.totalSupply || shares > held ? "EXCEEDS_BALANCE"
+      : book.totalAssets === 0n ? "IMPAIRED"
+        // `maxRedeem`, which a vault from before ERC-4626 does not have.
+        : most !== null && shares > most ? "INSUFFICIENT_LIQUIDITY" : null;
+  return { assets: assets.toString(), refusal, availableNow: refusal === "INSUFFICIENT_LIQUIDITY" ? worth(most!).toString() : null };
+}
+
 async function earnRedeem(c: Ctx, i: Extract<ActionInput, { action: "earn_redeem" }>): Promise<Plan> {
   const wallet = i.wallet as Address;
   const { address, v, g } = await partner(c, i.vault);
@@ -1767,7 +1946,8 @@ async function earnRedeem(c: Ctx, i: Extract<ActionInput, { action: "earn_redeem
   const held = await c.chain.vaultShares(address, wallet);
   const asked = i.shares ? BigInt(i.shares) : held;
   requireThat(asked > 0n && asked <= held, "EXCEEDS_BALANCE", held === 0n ? "This wallet holds no shares of this vault" : REFUSALS.EXCEEDS_BALANCE!);
-  const ask = (n: bigint) => indexerOf(c, g).get(`/intent/partners/vaults/${address.toLowerCase()}/preview?redeem=${n}&account=${wallet.toLowerCase()}`, previewAnswer);
+  const ask = (n: bigint): Promise<Redemption> => indexerOf(c, g).get(`/intent/partners/vaults/${address.toLowerCase()}/preview?redeem=${n}&account=${wallet.toLowerCase()}`, previewAnswer)
+    .catch((error: unknown) => { if (indexSilent(error)) return redemptionOnChain(c, address, wallet, n, held, book, worth); throw error; });
   // Sized on the vault's own book, read on chain at one block (`redeemableShares`): everything is every share when this
   // wallet alone holds them, nothing is lent and the vault can pay them all; otherwise the most the free cash pays that
   // leaves a raw unit behind the shares that stay, since shares out with nothing behind them make the vault refuse every
@@ -1789,7 +1969,7 @@ async function earnRedeem(c: Ctx, i: Extract<ActionInput, { action: "earn_redeem
     // reads (the index prices it on the vault's book whatever it refuses): a write-off lowers it, so the withdrawal is
     // planned again, and its least amount (`minAssets`, 0 until then, as a deposit's `minShares`) set, once the settle is mined.
     const view: View = { action: "earn_redeem", vault: address, name: vaultName(v, c.d), shares: shares.toString(), assets: p.assets, minAssets: "0", all: everything, ...inAsset(c, cash) };
-    return settleFirst(c, address, view, `Withdraw from ${vaultName(v, c.d)} (${f.short(address)})`, vaultName(v, c.d), indexerOf(c, g));
+    return settleFirst(c, address, view, `Withdraw from ${vaultName(v, c.d)} (${f.short(address)})`, vaultName(v, c.d), g);
   }
   if (p.refusal === "INSUFFICIENT_LIQUIDITY" && p.availableNow) throw new ApiError("INSUFFICIENT_LIQUIDITY", `The vault can pay ${f.money(BigInt(p.availableNow), cash)} now; redeem fewer shares`);
   requireThat(!p.refusal, vaultRefusal(p.refusal), refusalWords(p.refusal, cash, g.primary) ?? "The vault refuses this redemption");
@@ -1825,11 +2005,11 @@ async function earnRedeem(c: Ctx, i: Extract<ActionInput, { action: "earn_redeem
  * collected too (D251), their cash and earnings counted in their own asset beside USDG's, never added to it. Each claim is simulated before it goes in, and one that would revert now
  * is left out and said, so the steps after it still go out, as the app's Collect all leaves it out (web/src/lib/walletBatch.ts):
  * a bridged sGAGE claim pays nothing while its source awaits an unlock (`GageV2Rewards.claim` reverts NothingToClaim
- * though `claimable` reads more). The first vault's credits and claims, earlier engines' lender recoveries, retired Earn
- * strategies and the GAGE/sGAGE pool's rewards and Drip are gage.cash's to collect.
+ * though `claimable` reads more). The first vault's credits and claims, earlier engines' lender recoveries, retired Earn strategies and the
+ * GAGE/sGAGE pool's rewards and Drip are gage.cash's to collect.
  */
 async function collect(c: Ctx, i: Extract<ActionInput, { action: "collect" }>): Promise<Plan> {
-  const wallet = i.wallet as Address, now = c.now();
+  const wallet = i.wallet as Address, now = await chainNow(c);
   const steps: Step[] = [], rows: Row[] = [];
   // A claim with what it adds to the figures, counted only once its simulation passes; past MAX_COLLECT_CLAIMS, said.
   const claims: { step: Step; count: () => void }[] = [];
@@ -1849,12 +2029,22 @@ async function collect(c: Ctx, i: Extract<ActionInput, { action: "collect" }>): 
     return others.get(key)!;
   };
   const cores = [...c.d.engines, ...[...c.d.generations, ...c.d.retired].filter((g) => !g.primary).map((g) => g.core)];
-  // Each core and vault is read on its own: one that does not answer is left out and named, the rest planned (D412).
-  const coreReads = await eachRead(cores, async (e) => ({ credit: await c.chain.cashCredit(e.engine, wallet), loans: await walletLoans(c, e.engine, wallet) }),
-    (e) => `${lendAssetOf(c.d, e.engine).symbol} loans and credit on core ${e.engine}`);
-  const engines = coreReads.read.map(({ x: e, r }) => ({ e, ...r }));
+  // Each core and vault is read on its own: one that does not answer is left out and named, the rest planned (D412). A
+  // core's credit is the chain's and its loans the index's, each its own read: an index that does not answer leaves it.
+  const [creditReads, loanReads] = await Promise.all([
+    eachRead(cores, (e) => c.chain.cashCredit(e.engine, wallet), (e) => `${lendAssetOf(c.d, e.engine).symbol} credit on core ${e.engine}`),
+    eachRead(cores, (e) => walletLoans(c, e.engine, wallet), (e) => `${lendAssetOf(c.d, e.engine).symbol} loans on core ${e.engine}`),
+  ]);
   let sgage = 0n;
-  for (const { e, credit, loans } of engines) {
+  // A paused token's pickups wait for it (D213): each token asked once, its loans named in the plan's notes.
+  const pausedTokens = new Map<string, Promise<boolean>>(), waitingOn = new Set<string>();
+  const pausedOf = (token: Address) => {
+    const key = token.toLowerCase();
+    if (!pausedTokens.has(key)) pausedTokens.set(key, pausedNow(c, token));
+    return pausedTokens.get(key)!;
+  };
+  for (const e of cores) {
+    const credit = creditReads.read.find(({ x }) => x === e)?.r ?? 0n, loans = loanReads.read.find(({ x }) => x === e)?.r ?? [];
     const paid = lendAssetOf(c.d, e.engine);
     if (credit > 0n) {
       if (same(paid.token, c.d.usdg)) cash += credit;
@@ -1871,9 +2061,12 @@ async function collect(c: Ctx, i: Extract<ActionInput, { action: "collect" }>): 
         const expired = onChain.state === 1 && same(onChain.originator, wallet) && now >= onChain.fundingDeadline;
         const waiting = (onChain.state === 3 || onChain.state === 5) && same(onChain.collateralBeneficiary, wallet);
         if ((expired || waiting) && !await c.chain.released(onChain.account)) {
-          if (expired) steps.push(call(`Cancel unfunded loan #${p.id}`, e.engine, encodeFunctionData({ abi: engineAbi, functionName: "cancelFunding", args: [id] })));
-          steps.push(takeBack(e, id, wallet));
-          back.set(onChain.token.toLowerCase(), (back.get(onChain.token.toLowerCase()) ?? 0n) + onChain.collateral);
+          if (await pausedOf(onChain.token)) waitingOn.add((await collateralRef(c, onChain.token)).symbol);
+          else {
+            if (expired) steps.push(call(`Cancel unfunded loan #${p.id}`, e.engine, encodeFunctionData({ abi: engineAbi, functionName: "cancelFunding", args: [id] })));
+            steps.push(takeBack(e, id, wallet));
+            back.set(onChain.token.toLowerCase(), (back.get(onChain.token.toLowerCase()) ?? 0n) + onChain.collateral);
+          }
         }
       }
       const owed = BigInt(l.borrowerReward) > 0n || BigInt(l.lenderReward) > 0n ? await c.chain.loanRewards(e.rewards, id, wallet) : 0n;
@@ -1895,7 +2088,7 @@ async function collect(c: Ctx, i: Extract<ActionInput, { action: "collect" }>): 
   const heldReads = await eachRead(listed.vaults, ({ v, g }) => indexerOf(c, g).get(`/intent/partners/vaults/${v.address.toLowerCase()}/position/${wallet.toLowerCase()}`, holding),
     ({ v }) => `the holding in ${vaultName(v, c.d)} (${v.address})`);
   const holdings = heldReads.read.map(({ x: { v, g }, r: h }) => ({ v, g, h }));
-  const unread = [...coreReads.unread, ...listed.unread, ...heldReads.unread];
+  const unread = [...creditReads.unread, ...loanReads.unread, ...listed.unread, ...heldReads.unread];
   const ready = await claimablePockets(c, holdings.map(({ g, h }) => ({ engine: g.core.engine, pockets: h.pockets, backing: h.backing })));
   for (const [n, { v, g, h }] of holdings.entries()) {
     const pockets = ready[n]!.pockets.slice(0, MAX_CLAIM_POCKETS), loans = ready[n]!.backing;
@@ -1974,10 +2167,12 @@ async function collect(c: Ctx, i: Extract<ActionInput, { action: "collect" }>): 
   const notes = [
     ...(steps.length > 1 ? ["Each line is its own transaction."] : []),
     ...(left.length ? [`Left out, as ${left.length === 1 ? "it" : "each"} would revert now: ${left.join("; ")}. Collect again later.`] : []),
+    ...(waitingOn.size ? [`Left out while paused: ${[...waitingOn].join(", ")} back from closed loans, which stays yours in each loan's account. Collect again once it resumes.`] : []),
     ...(more ? ["More claims are ready: collect again once these have gone through."] : []),
     ...(unread.length ? [`Not read just now, so not in this plan: ${unread.join("; ")}. Collect again later.`] : []),
   ];
-  return { view, summary: { title: steps.length ? "Collect what is ready" : "Nothing is ready to collect", rows }, steps, notes };
+  const title = steps.length ? "Collect what is ready" : unread.length ? "Some of this wallet's loans and vaults could not be read now: collect again shortly" : "Nothing is ready to collect";
+  return { view, summary: { title, rows }, steps, notes, ...(unread.length ? { partial: true as const } : {}) };
 }
 
 /**
@@ -2033,7 +2228,7 @@ export async function plan(c: Ctx, input: ActionInput): Promise<Plan> {
     case "earn_redeem": return earnRedeem(c, input);
     case "collect": return collect(c, input);
     case "feedback": return feedback(c, input);
-    case "lp_borrow": case "lp_repay": case "lp_return_position": case "lp_collect": case "lp_withdraw": case "lp_deposit": case "lp_redeem": case "lp_claim_bonus":
+    case "lp_borrow": case "lp_repay": case "lp_return_position": case "lp_collect": case "lp_withdraw": case "lp_deposit": case "lp_redeem": case "lp_claim_bonus": case "lp_claim_rewards":
     case "lp_roll": case "lp_wrap": case "lp_unwrap": case "lp_create_vault": case "lp_vault_add_pool": case "lp_vault_remove_pool":
       return lpPlan(c, input);
     case "park": case "unpark": return parkPlan(c, input);
@@ -2042,5 +2237,7 @@ export async function plan(c: Ctx, input: ActionInput): Promise<Plan> {
     case "earn_exit_list": return earnExitList(c, input);
     case "earn_exit_cancel": return earnExitCancel(c, input);
     case "earn_exit_collect": return earnExitCollect(c, input);
+    case "create_vault": return createVaultPlan(c, input);
+    case "vault_manage": return manageVaultPlan(c, input);
   }
 }

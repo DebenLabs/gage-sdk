@@ -14,7 +14,16 @@ const LIMIT = 4_000_000;
 const TIMEOUT_MS = 25_000;
 
 const unavailable = () => new ApiError("UPSTREAM_UNAVAILABLE", "A gage data service did not answer", 503, true);
-const limited = () => new ApiError("RATE_LIMITED", "A gage data service asks for fewer requests a minute; wait and ask again", 429, true);
+/**
+ * A fetch that failed: a browser fails one it refuses for the page's origin just as it fails one the network lost, and says
+ * neither here. Where there is no page, on a server or over stdio, there is no origin to allow.
+ */
+const unreached = () => new ApiError("UPSTREAM_UNAVAILABLE", (globalThis as { location?: unknown }).location === undefined ? "A gage data service did not answer" : "A gage data service did not answer, or this page's origin is not allowed", 503, true);
+/** A rate limit, with the seconds its answer asks a caller to wait (`Retry-After`) where it names them. */
+const limited = (retryAfter: string | null) => {
+  const seconds = retryAfter !== null && /^\d{1,6}$/.test(retryAfter.trim()) ? Number(retryAfter) : null;
+  return new ApiError("RATE_LIMITED", "A gage data service asks for fewer requests a minute; wait and ask again", 429, true, seconds === null ? undefined : { details: { retryAfterSeconds: seconds } });
+};
 const tooLarge = () => new ApiError("UPSTREAM_TOO_LARGE", "A gage data service answered more than this API passes on", 503);
 
 /**
@@ -72,10 +81,10 @@ export function createUpstream(baseUrl: string, fetcher: typeof fetch = globalTh
     let response: Response;
     try {
       response = await fetcher(`${root}${path}`, { signal: AbortSignal.timeout(timeoutMs), redirect: "error", headers });
-    } catch { throw unavailable(); }
+    } catch { throw unreached(); }
     if (response.status === 429) {
       await response.body?.cancel().catch(() => undefined);
-      throw limited();
+      throw limited(response.headers.get("retry-after"));
     }
     const text = await bodyOf(response, deadline);
     let body: unknown = null;

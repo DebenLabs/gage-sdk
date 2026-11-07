@@ -23,7 +23,8 @@ export async function parkable(gage: Gage, wallet: string, also: { manager: stri
 
 /**
  * Sends a park's or an unpark's batch. A vault with a loan past its end is settled first (`again`): that batch is the
- * settle, and the batch is asked for again once it is mined. A wallet that cannot send batches sends `calls` in order.
+ * settle, and the batch is asked for again once it is mined. A wallet that cannot send batches sends `calls` in order,
+ * each with its own estimate plus its `extraGas` as its gas limit.
  */
 async function sendBatch(ask: () => Promise<ParkBatch>, sendCalls: SendCalls) {
   for (let round = 0; round < 2; round += 1) {
@@ -34,12 +35,14 @@ async function sendBatch(ask: () => Promise<ParkBatch>, sendCalls: SendCalls) {
   throw new Error("The vault still has loans to settle: ask again shortly");
 }
 
-/** Parks the wallet's first parkable position into the first vault that takes what it holds (or `vault`), as one batch. */
-export async function park(gage: Gage, wallet: string, sendCalls: SendCalls, vault?: string) {
-  const position = (await parkable(gage, wallet)).find((p) => p.refusal === null && p.vaults.length > 0);
-  if (!position) throw new Error("No out-of-range position of this wallet parks now");
-  const into = vault ?? position.vaults[0]!.vault;
-  return sendBatch(() => gage.parkCalls({ wallet, manager: position.manager, id: position.id, vault: into }), sendCalls);
+/**
+ * Parks the wallet's first position that `vault`, the partner vault you chose, takes, as one batch. Anyone can create a
+ * vault, so nothing here picks one for you: `vaults` lists each with its manager, in address order.
+ */
+export async function park(gage: Gage, wallet: string, sendCalls: SendCalls, vault: string) {
+  const position = (await parkable(gage, wallet)).find((p) => p.refusal === null && p.vaults.some((v) => v.vault.toLowerCase() === vault.toLowerCase()));
+  if (!position) throw new Error("No out-of-range position of this wallet parks into that vault now");
+  return sendBatch(() => gage.parkCalls({ wallet, manager: position.manager, id: position.id, vault }), sendCalls);
 }
 
 /** Unparks `amount` (raw, or all the vault can pay now) from `vault` into [tickLower, tickUpper] of a pool served, as one batch. */

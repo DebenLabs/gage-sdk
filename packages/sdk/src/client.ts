@@ -7,7 +7,7 @@ import type { Address } from "viem";
 import { createChain } from "./chain.js";
 import { foundGenerationsRefresher } from "./discovery.js";
 import { parseDeployment, type Deployment } from "./deployment.js";
-import { ApiError, requireThat } from "./errors.js";
+import { ApiError, requireThat, withoutUrls } from "./errors.js";
 import { waitForFill, type FillOutcome, type WaitOptions } from "./fill.js";
 import { MAINNET_MANIFEST } from "./deployments/mainnet.js";
 import { TESTNET_MANIFEST } from "./deployments/testnet.js";
@@ -20,10 +20,11 @@ import { prepareNext, type Prepared } from "./prepare.js";
 import * as reads from "./reads.js";
 import { run, type RunOptions, type RunResult } from "./run.js";
 import {
-  ACTIONS, actionInput, address, borrowQuoteInput, leverageQuoteInput, loanInput, lpQuoteInput, parkId, parseInput, putQuoteInput, vaultInput, type ActionInput, type ActionName, type ActionRequest,
+  ACTIONS, actionInput, address, borrowQuoteInput, createVaultInput, leverageQuoteInput, loanInput, lpQuoteInput, parkId, parseInput, putQuoteInput, vaultInput, vaultOnChainInput, type ActionInput, type ActionName, type ActionRequest,
 } from "./schemas.js";
 import type { Signer } from "./signer.js";
 import { createUpstream, type Upstream } from "./upstream.js";
+import * as vaults from "./vaults.js";
 
 export interface GageOptions {
   /**
@@ -31,7 +32,10 @@ export interface GageOptions {
    * the SDK and every default below; a manifest passed in must be that network's.
    */
   network?: Network;
-  /** A live manifest (`launch/live/<chainId>.json`); the network's snapshot bundled with the SDK when omitted. */
+  /**
+   * A live manifest, as gage.cash's `/api/deployment` answers it (its earlier generations then read at the network's
+   * retained index, its current ones at `indexerUrl`); the network's snapshot bundled with the SDK when omitted.
+   */
   manifest?: unknown;
   rpcUrl?: string;
   indexerUrl?: string;
@@ -64,7 +68,7 @@ export interface GageOptions {
 /** What a Gage built over a caller's context serves: every action unless it names fewer. */
 export interface GageScope {
   actions?: readonly ActionName[];
-  /** Brings `ctx.d` up to date before each method (lend generations found on chain, r13: src/discovery.ts). */
+  /** Brings `ctx.d` up to date before each method (lend generations found since the release: src/discovery.ts). */
   refresh?: (force?: boolean) => Promise<void>;
 }
 
@@ -78,7 +82,7 @@ export interface Gage {
   readonly actions: readonly ActionName[];
   /** Chain, contracts, allowed terms, fees and the rules. */
   capabilities(): Promise<Answer<typeof reads.capabilities>>;
-  /** Tokens gage takes as collateral now: each one's minimum, its most per loan where one is set, whether leverage buys it, and its gage.cash link. */
+  /** Tokens gage admits as collateral now: each one's minimum, its most per loan where one is set, whether leverage buys it, how many partner vaults lend against it, and its gage.cash link. */
   assets(): Promise<Answer<typeof reads.assets>>;
   /** The largest loan the partner vaults fund now for at most `maxCollateral`, or one exact loan (`collateral`, `principal`), with a `prepare` object. */
   borrowQuote(input: Input<typeof reads.borrowQuote>): Promise<Answer<typeof reads.borrowQuote>>;
@@ -105,7 +109,7 @@ export interface Gage {
   balances(wallet: string): Promise<Answer<typeof reads.balances>>;
   /**
    * The LP lane (docs/api.md "LP lane"), where the release makes it public (`deployment.lpLane`; LP_CLOSED elsewhere): a
-   * wallet's Uniswap v3 and v4, SushiSwap v3 and Ramses positions in a pool the lane lends against, with their worth at
+   * wallet's Uniswap v3 and v4, SushiSwap v3, Ouro v3 and Ramses positions in a pool the lane lends against, with their worth at
    * the pool's price (its Uniswap v4 positions named by gage's index, each checked on chain).
    */
   lpPositions(wallet: string): Promise<Answer<typeof lp.lpPositions>>;
@@ -124,6 +128,16 @@ export interface Gage {
   /** The pools among the partner vaults, a curator's alone where one is named: each one's two sides, a vault or none. */
   poolVaults(input?: Input<typeof pools.poolVaults>): Promise<Answer<typeof pools.poolVaults>>;
   /**
+   * One partner vault, with a free name: the call that creates it from the curator, simulated now, and the same as a
+   * Safe's Transaction Builder file. Signs nothing; `run({ action: "create_vault", … }, signer)` carries it out.
+   */
+  createVault(input: Input<typeof vaults.createVault>): Promise<Answer<typeof vaults.createVault>>;
+  /**
+   * One partner vault read from the chain alone, gage's index not asked: its book, its manager's settings and what waits,
+   * and with `wallet` what the vault can pay it now and the call that withdraws that.
+   */
+  vaultOnChain(input: Input<typeof vaults.vaultOnChain>): Promise<Answer<typeof vaults.vaultOnChain>>;
+  /**
    * A wallet's out-of-range positions in the pools park serves (D334): each one's pool, range and the one token it holds,
    * with the partner vaults that take it. `also` names positions a v4 PositionManager or a Fables hook cannot list.
    */
@@ -138,7 +152,7 @@ export interface Gage {
   run(input: ActionRequest, signer: Signer, options?: RunOptions): Promise<RunResult>;
   /** Waits for a listing to be funded (`run`'s `loan`); then `collect` sends its payout to the wallet. */
   waitForFill(input: { loanId: string; engine?: string }, options?: WaitOptions): Promise<FillOutcome>;
-  /** Asks gage's indexer now for the lend generations found on chain (r13); every other method asks at most once a minute. */
+  /** Asks gage's indexer now for the lend generations found since the release; every other method asks at most once a minute. */
   refreshGenerations(): Promise<void>;
 }
 
@@ -172,6 +186,8 @@ export function gageFrom(ctx: Ctx, scope: GageScope = {}): Gage {
     lpVaults: async () => lp.lpVaults(ctx),
     createPoolVaults: async (input) => pools.createPoolVaults(ctx, parseInput(pools.createPoolVaultsInput, input)),
     poolVaults: async (input) => pools.poolVaults(ctx, parseInput(pools.poolVaultsInput, input ?? {})),
+    createVault: async (input) => vaults.createVault(ctx, parseInput(createVaultInput, input)),
+    vaultOnChain: async (input) => vaults.vaultOnChain(ctx, parseInput(vaultOnChainInput, input)),
     parkPositions: async (w, also = []) => parkPositions(ctx, wallet(w), also.map((x) => ({ manager: parseInput(address, x.manager), id: parseInput(parkId, x.id) }))),
     parkCalls: async (input) => parkBatch(ctx, served(parseInput(actionInput, { ...(input as object), action: "park" })) as Extract<ActionInput, { action: "park" }>),
     unparkCalls: async (input) => parkBatch(ctx, served(parseInput(actionInput, { ...(input as object), action: "unpark" })) as Extract<ActionInput, { action: "unpark" }>),
@@ -185,14 +201,41 @@ export function gageFrom(ctx: Ctx, scope: GageScope = {}): Gage {
     waitForFill: async (input, options) => waitForFill(ctx, parseInput(loanInput, input), options),
     refreshGenerations: async () => { await scope.refresh?.(true); },
   };
-  // Lend generations found on chain (r13): each method reads the latest deployment, asked for at most once a minute.
+  // Lend generations found since the release: each method reads the latest deployment, asked for at most once a minute. And
+  // what is no refusal of the SDK's own (an RPC's failure, whose words can carry its URL) reaches a caller as one fixed
+  // answer, what failed its cause without any URL (D221). A caller's own bug, which asking again cannot clear, says so.
   const refresh = scope.refresh;
-  if (!refresh) return gage;
   for (const [name, method] of Object.entries(gage)) {
-    if (typeof method !== "function" || name === "refreshGenerations") continue;
-    Object.assign(gage, { [name]: async (...args: unknown[]) => { await refresh(); return (method as (...a: unknown[]) => unknown)(...args); } });
+    if (typeof method !== "function") continue;
+    Object.assign(gage, {
+      [name]: async (...args: unknown[]) => {
+        try {
+          if (refresh && name !== "refreshGenerations") await refresh();
+          return await (method as (...a: unknown[]) => unknown)(...args);
+        } catch (error) {
+          if (error instanceof ApiError) throw error;
+          if (error instanceof TypeError || error instanceof ReferenceError) throw new ApiError("INVALID_CALL", "This call cannot work as written: its cause says why", 400, false, { cause: error });
+          throw new ApiError("UNAVAILABLE", "gage could not answer this now", 503, true, { cause: withoutUrls(error) });
+        }
+      },
+    });
   }
   return gage;
+}
+
+/** A manifest as it was given: gage.cash's `/api/deployment` answers one under `deployment`. */
+const manifestIn = (given: unknown): unknown => {
+  const inner = given && typeof given === "object" ? (given as { deployment?: unknown }).deployment : undefined;
+  return inner && typeof inner === "object" ? inner : given;
+};
+/** A manifest read as `createGage` takes it: what it cannot read is refused with a code, in the reader's own words. */
+function readManifest(raw: unknown): Deployment {
+  try {
+    return parseDeployment(raw);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError("INVALID_MANIFEST", error instanceof Error ? error.message : "This manifest cannot be read", 400, false, { cause: error });
+  }
 }
 
 /**
@@ -202,8 +245,8 @@ export function gageFrom(ctx: Ctx, scope: GageScope = {}): Gage {
 export function createGage(options: GageOptions = {}): Gage {
   const named = options.network === undefined ? undefined : networkNamed(options.network);
   const bundled = named?.network === "testnet" ? TESTNET_MANIFEST : MAINNET_MANIFEST;
-  const raw = options.manifest ?? bundled;
-  const d = parseDeployment(raw);
+  const raw = manifestIn(options.manifest ?? bundled);
+  const d = readManifest(raw);
   if (named && named.chainId !== d.chainId) throw new ApiError("NETWORK_MISMATCH", `The manifest is not the ${named.network}'s`, 400);
   const n = defaultsFor(d.chainId);
   const valuationUrl = options.valuationUrl === undefined ? n.valuationUrl : options.valuationUrl;
@@ -218,7 +261,6 @@ export function createGage(options: GageOptions = {}): Gage {
     ...(options.parkPools?.length ? { parkPools: options.parkPools.map(parkPoolFrom) } : {}),
     now: options.now ?? (() => Math.floor(Date.now() / 1000)),
   };
-  // A release with a GenerationDeployer (r13) adds the lend generations it deployed since, from gage's indexer.
-  const found = (raw as { generationDeployer?: unknown }).generationDeployer !== undefined ? foundGenerationsRefresher(ctx, raw) : undefined;
-  return gageFrom(ctx, { ...(options.actions ? { actions: options.actions } : {}), ...(found ? { refresh: found } : {}) });
+  // The release adds the lend generations its GenerationDeployer deployed since, from gage's indexer.
+  return gageFrom(ctx, { ...(options.actions ? { actions: options.actions } : {}), refresh: foundGenerationsRefresher(ctx, raw) });
 }

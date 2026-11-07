@@ -14,16 +14,16 @@ import { ApiError, requireThat } from "./errors.js";
 import { defaultsFor } from "./networks.js";
 import type { Ctx } from "./plans.js";
 import { safeBatch, type SafeBatch } from "./safe.js";
-import { address, raw } from "./schemas.js";
+import { address, anyCase, raw } from "./schemas.js";
 
 /** The longest vault name, in bytes of UTF-8 (`IntentFactory.MAX_NAME_BYTES`). */
 export const NAME_MAX_BYTES = 48;
 /** The most a vault may put into one loan, in six-decimal units of its asset (`IntentVaultState.INTENT_MAX_LOAN_PRINCIPAL`). */
-const MAX_LOAN_UNITS = 1_000_000_000_000_000n;
+export const MAX_LOAN_UNITS = 1_000_000_000_000_000n;
 /** The first factory version that names its vaults (Intent D54): a pool's link is in its vaults' names. */
-const NAMED = 12;
+export const NAMED = 12;
 /** From this factory version every generation's vaults buy running loans and may be created to buy only (Intent D56). */
-const SECONDARY_AUCTION_MANDATE = 13;
+export const SECONDARY_AUCTION_MANDATE = 13;
 
 const SYMBOL = /^[^\s/]{1,20}$/u;
 const TAGGED = /^(?:(.*\S)\s+)?([^\s/]+)\/([^\s/]+)$/u;
@@ -94,12 +94,13 @@ export function poolsOf<V extends PoolSideVault>(vaults: Iterable<V>): PoolOf<V>
 // ---------------------------------------------------------------------------------------------------------- inputs
 
 const poolToken = z.string().regex(/^(0x[0-9a-fA-F]{40}|[^\s/]{1,20})$/, "a lend asset's symbol, or a token's 0x address")
+  .overwrite((value) => (/^0x[0-9a-fA-F]{40}$/.test(value) ? anyCase(value) : value))
   .describe("A token of the pool: a lend asset's symbol or address (USDG, or one gage_capabilities lists under lendAssets), or any token's address");
 const side = z.object({
   token: poolToken.describe("The pool token this side lends, as `pool` names it"),
   maxLoan: raw.describe("The most this vault puts into one loan, raw units of its token (USDG: 6 decimals)"),
   cashKeptFreeBps: z.number().int().min(0).max(10_000).optional()
-    .describe("The share of the vault a new loan must leave free in cash, bps, 0 to 10000: what the pool can draw on. 1000 (10%) when omitted"),
+    .describe("The share of the vault a new loan must leave free, in cash or in its reserve, bps, 0 to 10000: what the pool can draw on. 1000 (10%) when omitted"),
   collateral: z.array(address).min(1).max(64).optional()
     .describe("The tokens this vault lends against, of one universe (real-world assets, or the Robinhood ecosystem). When omitted: every token its generation admits in the universe of the pool's other token, less the pool's own two tokens (a stock's vault: the memes paired with it). Naming a pool token is refused unless allowPoolTokens is true"),
 }).strict();
@@ -129,9 +130,19 @@ export const poolVaultsInput = z.object({
 /** The factory's categories (`IntentCategory`): a universe takes two whole (D41), real-world assets STOCK and COMMODITY,
  * the Robinhood ecosystem MEME and RH_ECOSYSTEM. */
 const RWA = [0, 3];
-const WEIGHTS = { RWA: [10_000, 0, 0, 10_000], RH_ECO: [0, 10_000, 10_000, 0] } as const;
-type Universe = keyof typeof WEIGHTS;
-const universeOf = (category: number): Universe => (RWA.includes(category) ? "RWA" : "RH_ECO");
+export const WEIGHTS = { RWA: [10_000, 0, 0, 10_000], RH_ECO: [0, 10_000, 10_000, 0] } as const;
+export type Universe = keyof typeof WEIGHTS;
+export const universeOf = (category: number): Universe => (RWA.includes(category) ? "RWA" : "RH_ECO");
+/** One vault's `IntentFactory.create`, as its factory's version takes it: only mandate 13's can buy loans alone. */
+export const createCall = (version: number, mandate: Parameters<typeof encodeMandate>[0], buys: boolean, extra: number, buysOnly: boolean, name: string): Hex => encodeMandate(mandate, version, buys, extra, buysOnly, name);
+function encodeMandate(
+  mandate: { curator: Address; categoryWeights: readonly [number, number, number, number]; assets: readonly Address[]; maxLoanTerm: number; feeBps: number; minGrade: number; minRateGrade: number; maxLoanPrincipal: bigint; maxAssetBps: number; bufferBps: number; executionCapBps: number },
+  version: number, buys: boolean, extra: number, buysOnly: boolean, name: string,
+): Hex {
+  return version >= SECONDARY_AUCTION_MANDATE
+    ? encodeFunctionData({ abi: factoryAbi, functionName: "create", args: [mandate, buys, extra, buysOnly, name] })
+    : encodeFunctionData({ abi: factoryAbi, functionName: "create", args: [mandate, buys, extra, name] });
+}
 
 /** A pool token as `pool` names it: a public generation's lend asset, or any other token by its address. */
 type Token = { token: Address | null; symbol: string; g: Generation | null };
@@ -149,7 +160,7 @@ async function poolTokenOf(c: Ctx, ref: string): Promise<Token> {
 }
 
 /** What a generation's vault may lend against now: the tokens its core's registry admits and its factory classified. */
-async function admitted(c: Ctx, g: Generation, curator: Address) {
+export async function admitted(c: Ctx, g: Generation, curator: Address) {
   const offered = g.primary ? c.d.assets.map((a) => ({ token: a.token, symbol: a.symbol })) : g.collateral.map((x) => ({ token: x.token, symbol: x.symbol }));
   const [factory, configs] = await Promise.all([
     c.chain.intentFactory(g.factory, curator, offered.map((t) => t.token)),
@@ -261,8 +272,7 @@ export async function createPoolVaults(c: Ctx, input: z.output<typeof createPool
       executionCapBps: input.priorityFeeBps ?? 2_000,
     };
     const extra = buys ? input.buyLoans!.extraBps : 0;
-    const data = auction ? encodeFunctionData({ abi: factoryAbi, functionName: "create", args: [mandate, buys, extra, false, name] })
-      : encodeFunctionData({ abi: factoryAbi, functionName: "create", args: [mandate, buys, extra, name] });
+    const data = createCall(factory.mandateVersion, mandate, buys, extra, false, name);
     // Each factory creates for its caller only: simulated from the curator, a Safe included, before anything is handed over.
     await c.chain.simulate({ from: curator, to: g.factory, data, value: 0n });
     sides.push({

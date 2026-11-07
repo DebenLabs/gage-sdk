@@ -3,11 +3,13 @@ import { getAddress } from "viem";
 import { describe, expect, it } from "vitest";
 import type { FoundGenerationRead } from "../src/chain.js";
 import { gageFrom } from "../src/client.js";
-import { parseDeployment } from "../src/deployment.js";
+import { engineOf, parseDeployment, retiredCore } from "../src/deployment.js";
 import { TESTNET_MANIFEST } from "../src/deployments/testnet.js";
+import { everyPartnerVault } from "../src/data.js";
 import { foundGenerationsRefresher, foundProblem, mergeFoundGenerations, proveFoundGenerations } from "../src/discovery.js";
-import type { Ctx } from "../src/plans.js";
-import { ctx as testCtx, fakeChain, fakeUpstream } from "../src/testing.js";
+import { generationFor, type Ctx } from "../src/plans.js";
+import { assets, borrowQuote, portfolio } from "../src/reads.js";
+import { assetManifest, ctx as testCtx, fakeChain, fakeUpstream, WALLET } from "../src/testing.js";
 
 /**
  * Lend generations found on chain (r13; docs/api.md, "Lend generations found on chain"): a stablecoin market a Safe batch
@@ -154,6 +156,43 @@ describe("found generations in gage-sdk", () => {
     expect(ctx.d.generations.some((g) => g.id === "USDx1")).toBe(true);
   });
 
+  it("stay readable once unlisted: a proved generation's loans and holdings remain, as a retained one's, though nothing new opens there", () => {
+    const d = parseDeployment(mergeFoundGenerations(manifest, body({ USDx2: entry(2, false) })));
+    expect(d.generations.some((g) => g.id === "USDx2")).toBe(false);
+    const kept = d.retired.find((g) => g.id === "USDx2");
+    expect(kept?.core.engine).toBe(getAddress(entry(2).core));
+    expect(engineOf(d, entry(2).core)).not.toBeNull();
+    expect(retiredCore(d, entry(2).core)).toBe(true);
+    // A hidden generation the release names itself stays hidden: only one found on chain was ever proved.
+    const named = parseDeployment(assetManifest());
+    expect(named.retired.some((g) => g.id === "NVDAx")).toBe(false);
+  });
+
+  it("are not claimed to be no one's while the index has not said: an engine the release does not name is unknown, not refused", async () => {
+    const stranger = at(0xbeef);
+    const indexer = fakeUpstream({ "/intent/generations": () => ({ status: 503, body: {} }) });
+    const c = testCtx({ d: parseDeployment(manifest), chain: chainOf(readOf(1)), indexer });
+    const gage = gageFrom(c, { refresh: foundGenerationsRefresher(c, manifest) });
+    await expect(gage.loan({ loanId: "1", engine: stranger })).rejects.toMatchObject({ code: "UNAVAILABLE", retryable: true });
+    // Once it has answered, the release's word and the chain's are all there is.
+    const answers = fakeUpstream({ "/intent/generations": () => ({ status: 200, body: body({}) }) });
+    const d = testCtx({ d: parseDeployment(manifest), chain: chainOf(readOf(1)), indexer: answers });
+    const known = gageFrom(d, { refresh: foundGenerationsRefresher(d, manifest) });
+    await expect(known.loan({ loanId: "1", engine: stranger })).rejects.toMatchObject({ code: "UNKNOWN_ENGINE" });
+  });
+
+  it("do not hold a call up past a few seconds where the index or a node hangs: what they find comes after", async () => {
+    let answer: (r: { status: number; body: unknown }) => void = () => undefined;
+    const indexer = { raw: () => new Promise<{ status: number; body: unknown }>((resolve) => { answer = resolve; }), get: () => Promise.reject(new Error("unused")) };
+    const c = testCtx({ d: parseDeployment(manifest), chain: chainOf(readOf(1)), indexer: indexer as never });
+    const refresh = foundGenerationsRefresher(c, manifest, { waitMs: 10 });
+    await refresh();
+    expect(c.d.generations.some((g) => g.id === "USDx1")).toBe(false);
+    answer({ status: 200, body: body({ USDx1: entry(1) }) });
+    await refresh(true);
+    expect(c.d.generations.some((g) => g.id === "USDx1")).toBe(true);
+  });
+
   it("reach a Gage's reads once proved: its deployment is the latest one asked", async () => {
     let served = body({});
     const ctx = testCtx({ d: parseDeployment(manifest), chain: chainOf(readOf(1)), indexer: fakeUpstream({ "/intent/generations": () => ({ status: 200, body: served }) }) });
@@ -165,5 +204,91 @@ describe("found generations in gage-sdk", () => {
     served = body({ USDx1: entry(1) });
     await gage.refreshGenerations();
     expect(gage.deployment.generations.some((g) => g.id === "USDx1")).toBe(true);
+  });
+});
+
+// What a call answers in a process's first seconds, and what the index's word may and may not take away.
+describe("found generations while they are read", () => {
+  const stuck = () => new Promise<never>(() => undefined);
+  const answering = (served: () => unknown) => fakeUpstream({ "/intent/generations": () => ({ status: 200, body: served() }) });
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("are known as soon as they are proved: a real engine is never called no one's", async () => {
+    const chain = fakeChain({ foundGeneration: () => Promise.resolve(readOf(1)) });
+    const c = testCtx({ d: parseDeployment(manifest), chain, indexer: answering(() => body({ USDx1: entry(1) })) });
+    const gage = gageFrom(c, { refresh: foundGenerationsRefresher(c, manifest, { waitMs: 5 }) });
+    const first = await gage.loan({ loanId: "1", engine: entry(1).core }).catch((e: { code: string }) => e.code);
+    expect(first).not.toBe("UNKNOWN_ENGINE");
+    await wait(5);
+    expect(engineOf(c.d, entry(1).core)).not.toBeNull();
+    expect(c.generationsUnread).toBe(false);
+  });
+
+  it("stay unknown, not refused, until the deployment holds them", async () => {
+    const c = testCtx({ d: parseDeployment(manifest), chain: fakeChain({ foundGeneration: stuck }), indexer: answering(() => body({ USDx1: entry(1) })) });
+    const gage = gageFrom(c, { refresh: foundGenerationsRefresher(c, manifest, { waitMs: 5 }) });
+    await expect(gage.loan({ loanId: "1", engine: entry(1).core })).rejects.toMatchObject({ code: "UNAVAILABLE", retryable: true });
+    expect(c.generationsUnread).toBe(true);
+    expect(engineOf(c.d, entry(1).core)).toBeNull();
+  });
+
+  it("stay once proved: an index that stops naming one takes nothing away, and the reads say part of it is unread", async () => {
+    let now = 0, served = body({ USDx1: entry(1) });
+    const c = testCtx({ d: parseDeployment(manifest), chain: chainOf(readOf(1)), indexer: answering(() => served) });
+    const refresh = foundGenerationsRefresher(c, manifest, { now: () => now });
+    await refresh();
+    expect(c.generationsUnread).toBe(false);
+    served = body({});
+    now = 60_000;
+    await refresh();
+    expect(c.d.generations.some((g) => g.id === "USDx1")).toBe(true);
+    expect(engineOf(c.d, entry(1).core)).not.toBeNull();
+    expect(c.generationsUnread).toBe(true);
+    expect((await everyPartnerVault(c)).unread.join(" ")).toMatch(/found since this release/);
+    // Nor does a later entry the chain refuses replace the one it proved.
+    served = body({ USDx1: { ...entry(1), core: at(0xbad) } });
+    now = 120_000;
+    await refresh();
+    expect(c.d.generations.find((g) => g.id === "USDx1")?.core.engine).toBe(getAddress(entry(1).core));
+    served = body({ USDx1: entry(1) });
+    now = 180_000;
+    await refresh();
+    expect(c.generationsUnread).toBe(false);
+    expect((await everyPartnerVault(c)).unread.join(" ")).not.toMatch(/found since this release/);
+  });
+
+  it("leave a lend asset not named yet to be asked about again, while the index has not said which are lent", () => {
+    const stranger = at(0x7099);
+    const c = testCtx();
+    c.generationsUnread = true;
+    expect(() => generationFor(c, stranger)).toThrowError(expect.objectContaining({ code: "UNAVAILABLE", retryable: true }));
+    c.generationsUnread = false;
+    expect(() => generationFor(c, stranger)).toThrowError(expect.objectContaining({ code: "UNKNOWN_LEND_ASSET" }));
+  });
+
+  it("leave the lists saying part of them is unread, never that they are whole", async () => {
+    const c = testCtx();
+    c.generationsUnread = true;
+    expect(await assets(c)).toMatchObject({ status: "partial", unread: [expect.stringMatching(/found since this release/) as string] });
+    expect(await portfolio(c, WALLET)).toMatchObject({ status: "partial", unread: expect.arrayContaining([expect.stringMatching(/found since this release/) as string]) as string[] });
+    c.generationsUnread = false;
+    const whole = await assets(c);
+    expect(whole).not.toHaveProperty("status");
+    expect(whole).not.toHaveProperty("unread");
+    expect(((await portfolio(c, WALLET)).unread ?? []).join(" ")).not.toMatch(/found since this release/);
+  });
+
+  it("are all a process asks after: a token this release does not name is refused at once, whatever a registry has admitted since", async () => {
+    const c = testCtx();
+    await expect(borrowQuote(c, { token: at(0x7099), maxCollateral: "1000000000000000000", term: 604_800 })).rejects.toMatchObject({ code: "UNSUPPORTED_COLLATERAL", retryable: false });
+  });
+
+  it("ask nothing of a release that names no deployer", async () => {
+    const { generationDeployer: _none, ...raw } = manifest as Record<string, unknown>;
+    const indexer = fakeUpstream({});
+    const c = testCtx({ d: parseDeployment(raw), indexer });
+    await foundGenerationsRefresher(c, raw)(true);
+    expect(indexer.asked).toEqual([]);
+    expect(c.generationsUnread).toBeUndefined();
   });
 });

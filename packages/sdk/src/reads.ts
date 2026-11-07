@@ -1,8 +1,8 @@
 /** The read tools: what an agent needs to decide, from the chain and gage's own services, private loans left out. */
 import { maxUint256, zeroAddress, type Address } from "viem";
 import type { AutoRollState } from "./chain.js";
-import { accounting, allPartnerVaults, claimablePockets, eachRead, everyPartnerVault, holding, indexerOf, loanRecord, stateName, vaultLinks, vaultName, walletLoans } from "./data.js";
-import { assetOf, engineOf, lendAssetOf, lendsMore, putGenerations, putRouterOf, retiredCore, rolloverRouterOf, type LendAsset } from "./deployment.js";
+import { accounting, claimablePockets, eachRead, everyPartnerVault, FOUND_UNREAD, fundsLoans, holding, indexerOf, listedPartnerVaults, loanRecord, partnerVaults, stateName, vaultLinks, vaultName, walletLoans } from "./data.js";
+import { assetOf, lendAssetOf, lendsMore, putGenerations, putRouterOf, retiredCore, rolloverRouterOf, type Generation, type LendAsset } from "./deployment.js";
 import { exitDesks, exitLine, exitOwed } from "./earnExit.js";
 import { ApiError, requireThat } from "./errors.js";
 import * as f from "./format.js";
@@ -10,7 +10,7 @@ import { instant, preview } from "./intent.js";
 import { LP_RULE, lpCapabilities, lpHoldings } from "./lp.js";
 import { actionsOn, defaultsFor } from "./networks.js";
 import { PARK_RULE, parkPoolsIn, poolRow } from "./park.js";
-import { aboveMinimum, capAt, checked, collateralOf, generationFor, leverageTerms, loopGenerationFor, lowestCost, partner, priceExact, putGenerationFor, putTerms, refOf, termsOf, type Ctx } from "./plans.js";
+import { pausedNow, aboveMinimum, capAt, checked, collateralOf, engineNamed, generationFor, leverageTerms, loopGenerationFor, listedPartner, lowestCost, priceExact, putGenerationFor, putTerms, refOf, termsOf, type Ctx } from "./plans.js";
 import type { ActionName } from "./schemas.js";
 
 /** What gage for agents leaves out (D222): a private loan stays private, so no read or action serves one. */
@@ -52,6 +52,9 @@ const vaultLink = (c: Ctx, links: ReadonlyMap<string, string>, vault: string) =>
 /** A registry's per-loan maximum, null where it sets none: a token listed on the Intent core has a minimum only (D276). */
 const perLoan = (max: bigint) => (max === maxUint256 ? null : rawStr(max));
 
+/** A term as gage's answers name one. */
+const termRow = (seconds: number) => ({ seconds, days: seconds / 86_400 });
+
 /** `actions`: the actions this Gage serves (all by default; the hosted service serves those its review page draws). */
 export async function capabilities(c: Ctx, actions: readonly ActionName[] = actionsOn(c.d)) {
   const reg = c.d.core.registry;
@@ -61,20 +64,22 @@ export async function capabilities(c: Ctx, actions: readonly ActionName[] = acti
   const lent = c.d.generations.filter((g) => !g.primary);
   const lendAssets = await Promise.all(lent.map(async (g) => ({
     token: g.lendAsset.token, symbol: g.lendAsset.symbol, decimals: g.lendAsset.decimals, stable: g.lendAsset.stable, core: g.core.engine, factory: g.factory,
-    terms: (await termsOf(c, g.core.registry)).map((t) => ({ seconds: t, days: t / 86_400 })),
+    terms: (await termsOf(c, g.core.registry)).map(termRow),
     ...(g.loopRouter ? { loopRouter: g.loopRouter } : {}), ...(g.putRouter ? { putRouter: g.putRouter } : {}),
+    ...(g.rolloverRouter ? { rolloverRouter: g.rolloverRouter } : {}), ...(g.core.cashoutRouter ? { cashoutRouter: g.core.cashoutRouter } : {}),
   })));
   const n = defaultsFor(c.d.chainId);
-  const puts = putGenerations(c.d).length > 0;
+  // What a rule says is what this Gage carries out: a lane or a put it does not serve is said by no rule of its.
+  const puts = putGenerations(c.d).length > 0 && actions.includes("put_open");
   // The LP lane (D314, D315) once the release makes it public: its contracts, pools and the registry's settings.
   const lp = c.d.lpLane ? await lpCapabilities(c) : null;
   // Park and unpark (D334) where a pool is served: the pools, by the manager and id their actions name.
   const parks = actions.includes("park");
-  const rules = [...RULES, ...(lent.length ? [LEND_ASSET_RULE, ...(puts ? [PUT_RULE] : [])] : []), ...(lp ? [LP_RULE] : []), ...(parks ? [PARK_RULE] : [])];
+  const rules = [...RULES, ...(lent.length ? [LEND_ASSET_RULE, ...(puts ? [PUT_RULE] : [])] : []), ...(lp && actions.some((a) => a.startsWith("lp_")) ? [LP_RULE] : []), ...(parks ? [PARK_RULE] : [])];
   return {
     service: "gage for agents", network: n.network, chainId: c.d.chainId,
-    contracts: { usdg: c.d.usdg, core: c.d.core.engine, factory: c.d.factory, loopRouter: c.d.loopRouter },
-    terms: terms.map((t) => ({ seconds: t, days: t / 86_400 })), originationFeeBps: feeBps, newLoansPaused: paused,
+    contracts: { usdg: c.d.usdg, core: c.d.core.engine, factory: c.d.factory, loopRouter: c.d.loopRouter, rolloverRouter: rolloverRouterOf(c.d, c.d.core.engine), cashoutRouter: c.d.core.cashoutRouter },
+    terms: terms.map(termRow), originationFeeBps: feeBps, newLoansPaused: paused,
     usdgDecimals: 6, actions: [...actions], rules: rules.length === RULES.length ? RULES : rules, app: n.appUrl,
     ...(lent.length ? { lendAssets } : {}),
     ...(lp ? { lpLane: lp } : {}),
@@ -82,27 +87,53 @@ export async function capabilities(c: Ctx, actions: readonly ActionName[] = acti
   };
 }
 
+/**
+ * The partner vaults of each generation that lend against a token now: those whose mandate names it and that fund loans,
+ * a vault that buys running loans alone never among them (D452). Null where that generation's vaults could not be read:
+ * unknown, never none. A listing is not a loan: a token no vault names is admitted and cannot be borrowed against yet.
+ */
+async function lendersOf(c: Ctx) {
+  const { read } = await eachRead(c.d.generations, (g) => partnerVaults(indexerOf(c, g), c.d, g), (g) => g.id);
+  const lending = (g: Generation, token: string) => read.find(({ x }) => x === g)?.r?.filter((v) => fundsLoans(v) && v.assets.some((t) => same(t, token))) ?? null;
+  return {
+    count: (g: Generation, token: string) => lending(g, token)?.length ?? null,
+    /** The terms of `offered` that one of those vaults takes: a term only a stopped vault or none takes is not one a loan can be funded for now. */
+    terms: (g: Generation, token: string, offered: readonly number[]) => {
+      const vaults = lending(g, token);
+      return vaults ? offered.filter((t) => vaults.some((v) => v.maxLoanTerm >= t)).map(termRow) : null;
+    },
+  };
+}
+
 export async function assets(c: Ctx) {
   const reg = c.d.core.registry;
+  const stocks = c.d.assets.filter((a) => a.lane === "STOCK").map((a) => a.token);
+  const [lenders, multipliers, stopped] = await Promise.all([lendersOf(c), c.chain.uiMultipliers(stocks), c.chain.tokensPaused(stocks)]);
+  const shown = new Map(stocks.map((token, n) => [lower(token), multipliers[n] ?? null]));
+  const multiple = (token: string) => shown.get(lower(token))?.toString() ?? null;
+  // Whether a Stock Token is paused now (D213): what would move it waits, a pledge, a sale or a roll of it among them.
+  const halted = new Set(stocks.filter((_, n) => stopped[n] === true).map(lower));
+  const usdg = c.d.generations[0]!;
+  const offered = await termsOf(c, reg);
   const rows = await Promise.all(c.d.assets.map(async (a) => {
     const cfg = await c.chain.tokenConfig(reg, a.token);
     return {
       token: a.token, symbol: a.symbol, name: a.name, decimals: a.decimals, lane: a.lane, allowed: cfg.allowed,
       minAmount: rawStr(cfg.minAmount), maxPerLoan: perLoan(cfg.maxDealRaw), leverage: c.d.loopRouter !== null && (c.d.loopPools.get(lower(a.token))?.length ?? 0) > 0,
-      link: tokenLink(c, a.token), ...named(c, c.d.generations[0]!.lendAsset),
+      vaults: lenders.count(usdg, a.token), terms: lenders.terms(usdg, a.token, offered), paused: halted.has(lower(a.token)), uiMultiplier: multiple(a.token), link: tokenLink(c, a.token), ...named(c, usdg.lendAsset),
     };
   }));
   // A lend asset's generation lends against its own tokens (D249), each admitted by its own registry: one row per lend
   // asset a token is borrowed in, never leveraged: a lend asset's loop router opens puts alone (put_open, D313).
   const lent = await Promise.all(c.d.generations.filter((g) => !g.primary).map(async (g) => Promise.all(g.collateral.map(async (x) => {
     const a = await collateralOf(c, g, x.token);
-    const cfg = await c.chain.tokenConfig(g.core.registry, a.token);
+    const [cfg, own] = await Promise.all([c.chain.tokenConfig(g.core.registry, a.token), termsOf(c, g.core.registry)]);
     return {
       token: a.token, symbol: a.symbol, name: a.name, decimals: a.decimals, lane: a.lane, allowed: cfg.allowed,
-      minAmount: rawStr(cfg.minAmount), maxPerLoan: perLoan(cfg.maxDealRaw), leverage: false, link: tokenLink(c, a.token), asset: refOf(g.lendAsset),
+      minAmount: rawStr(cfg.minAmount), maxPerLoan: perLoan(cfg.maxDealRaw), leverage: false, vaults: lenders.count(g, a.token), terms: lenders.terms(g, a.token, own), paused: halted.has(lower(a.token)), uiMultiplier: multiple(a.token), link: tokenLink(c, a.token), asset: refOf(g.lendAsset),
     };
   }))));
-  return { assets: [...rows, ...lent.flat()].filter((r) => r.allowed) };
+  return { assets: [...rows, ...lent.flat()].filter((r) => r.allowed), ...(c.generationsUnread ? { status: "partial" as const, unread: [FOUND_UNREAD] } : {}) };
 }
 
 type QuoteInput = {
@@ -123,6 +154,9 @@ export async function borrowQuote(c: Ctx, i: QuoteInput) {
   const g = generationFor(c, i.lendAsset), cash = g.lendAsset;
   const a = g.primary ? assetOf(c.d, i.token) : await collateralOf(c, g, i.token);
   requireThat(a, "UNSUPPORTED_COLLATERAL", "gage does not take this token as collateral");
+  // A term gage does not offer is said as that, never as something of the token's.
+  const terms = await termsOf(c, g.core.registry);
+  requireThat(terms.includes(i.term), "TERM_NOT_ALLOWED", `Allowed terms: ${terms.map(f.days).join(", ")}`);
   // Under the token's minimum no vault can fund it: said with the minimum, before the rates service is asked.
   aboveMinimum(a, BigInt(exact ? i.collateral! : i.maxCollateral!), (await c.chain.tokenConfig(g.core.registry, a.token)).minAmount);
   if (exact) return exactQuote(c, i, g, a, BigInt(i.collateral!), BigInt(i.principal!));
@@ -179,8 +213,6 @@ function gradesOf(r: Awaited<ReturnType<typeof preview>>) {
  */
 async function exactQuote(c: Ctx, i: QuoteInput, g: ReturnType<typeof generationFor>, a: { token: Address; symbol: string; decimals: number; lane: string }, collateral: bigint, principal: bigint) {
   const cash = g.lendAsset, core = g.core.engine, borrower = (i.wallet ?? core) as Address;
-  const terms = await termsOf(c, g.core.registry);
-  requireThat(terms.includes(i.term), "TERM_NOT_ALLOWED", `Allowed terms: ${terms.map(f.days).join(", ")}`);
   const own = i.costBps !== undefined;
   const { cap, tenths, value, preview: p } = await priceExact(c, g, a, collateral, principal, i.term, borrower, (most) =>
     new ApiError("PRINCIPAL_TOO_HIGH", `This pledge supports a loan of at most ${f.money(most, cash)} now; borrow less or pledge more`, 409, false,
@@ -283,24 +315,27 @@ const RETIRED_NOTE =
  * there is still ended here (gage.cash offers none of these on it), as a put there still closes.
  */
 export async function loan(c: Ctx, i: { loanId: string; engine?: string | undefined }, served: readonly ActionName[] = actionsOn(c.d)) {
-  const engine = i.engine ? engineOf(c.d, i.engine) : c.d.core;
-  requireThat(engine, "UNKNOWN_ENGINE", "This engine is not gage's", 404);
+  const engine = engineNamed(c, i.engine);
   const p = await loanRecord(c, engine.engine, i.loanId);
   const id = BigInt(i.loanId);
   const l = await c.chain.loan(engine.engine, id);
   const endsAt = l.fundedAt > 0 ? l.fundedAt + l.term : null;
   const pay = lendAssetOf(c.d, engine.engine), router = rolloverRouterOf(c.d, engine.engine), seller = engine.cashoutRouter;
   const putter = putRouterOf(c.d, engine.engine), puts = putter !== null && !same(l.token, pay.token), retired = retiredCore(c.d, engine.engine);
-  const open = l.state === 1 || l.state === 2, running = l.state === 2 && endsAt !== null && c.now() < endsAt;
+  // Whether it still runs is the chain's to say: the machine asking may be ahead of it or behind.
+  const open = l.state === 1 || l.state === 2, running = l.state === 2 && endsAt !== null && (await c.chain.head()).timestamp < endsAt;
   const closedBy = l.state !== 3 ? null : router && same(l.collateralBeneficiary, router) ? "roll" as const
     : seller && same(l.collateralBeneficiary, seller) ? "cash_out" as const : null;
   // A cash-out is this Gage's where its router sells through an aggregator (D245) and a valuation service builds the
   // sale; a router from before such sales answers no `executorAllowed`, and its loans cash out on the app.
-  const sells = async () => (served.includes("cash_out") && c.valuation && seller ? await c.chain.cashoutExecutorAllowed(seller, zeroAddress) !== null : false);
+  // One with no flash pool (a v4 router) takes another sale than the SDK builds: its loans cash out on the app too.
+  const sells = async () => (served.includes("cash_out") && c.valuation && seller ? await c.chain.cashoutExecutorAllowed(seller, zeroAddress) !== null && await c.chain.cashoutFlashPool(seller) !== null : false);
+  // Whether the pledge can move now (D213): a read that fails is no pause, and every action is said as ever.
+  const collateralPaused = l.state !== 4 && await pausedNow(c, l.token);
   const [instruction, paused, here, released, putInstruction, putPaused] = await Promise.all([
     router && open ? c.chain.autoRoll(router, id) : null,
     router && open && !retired ? c.chain.rolloverPaused(router) : false,
-    running && seller && !same(l.token, pay.token) ? sells() : false,
+    running && seller && !same(l.token, pay.token) && !collateralPaused ? sells() : false,
     // Whether the collateral was taken back; an account that does not answer is read as not, so collect is still said.
     (l.state === 3 || l.state === 5) && !closedBy ? c.chain.released(l.account).catch(() => false) : true,
     // The put router keeps its own instructions, and answers the rollover router's reads (`paused`, `autoRolls`).
@@ -313,9 +348,9 @@ export async function loan(c: Ctx, i: { loanId: string; engine?: string | undefi
     (served.includes(action) ? [`${action} (${who})`] : onApp === null ? [] : [`${action} on ${host} (${onApp})`]);
   const holder = "holder of the reclaim right", left = "the wallet that left the instruction";
   // Nothing rolls a loan on a retained generation; gage.cash offers neither a roll nor the end of an instruction on one.
-  const rolls = router !== null && !paused && !retired, keeper = rolls && c.d.rolloverExecutor !== null;
+  const rolls = router !== null && !paused && !retired, keeper = rolls && c.d.rolloverExecutor !== null, movable = !collateralPaused;
   // The put router's actions, done here alone: gage.cash does not offer them.
-  const putting = puts && !putPaused, putRolls = putting && !retired, putKeeper = putRolls && c.d.rolloverExecutor !== null;
+  const putting = puts && !putPaused && movable, putRolls = putting && !retired, putKeeper = putRolls && c.d.rolloverExecutor !== null;
   const actions = l.state === 1
     ? [
       ...way("cancel", "borrower"), ...(keeper ? way("auto_roll", holder, null) : []), ...(instruction ? way("cancel_auto_roll", left, null) : []),
@@ -324,8 +359,8 @@ export async function loan(c: Ctx, i: { loanId: string; engine?: string | undefi
     : running
       ? [
         ...way("reclaim", `${holder}, before endsAt`),
-        ...(here ? [`cash_out (${holder}, before endsAt)`] : seller && !same(l.token, pay.token) ? [`cash_out on ${host} (${holder}, before endsAt)`] : []),
-        ...(rolls ? way("roll", `${holder}, before endsAt`, `${holder}, in the loan's last day`) : []),
+        ...(here ? [`cash_out (${holder}, before endsAt)`] : movable && seller && !same(l.token, pay.token) ? [`cash_out on ${host} (${holder}, before endsAt)`] : []),
+        ...(rolls && movable ? way("roll", `${holder}, before endsAt`, `${holder}, in the loan's last day`) : []),
         ...(keeper ? way("auto_roll", holder) : []),
         ...(instruction ? way("cancel_auto_roll", left, retired ? null : left) : []),
         ...(putting ? way("put_close", `${holder}, before endsAt`, null) : []),
@@ -333,12 +368,12 @@ export async function loan(c: Ctx, i: { loanId: string; engine?: string | undefi
         ...(putKeeper ? way("put_auto_roll", holder, null) : []),
         ...(putInstruction ? way("put_cancel_auto_roll", left, null) : []),
       ]
-      : !released ? way("collect", "collateral back to the borrower") : [];
+      : !released && movable ? way("collect", "collateral back to the borrower") : [];
   return {
     engine: engine.engine, loanId: i.loanId, state: stateName(l.state), borrower: l.originator, reclaimRightHolder: p.owner ?? null,
     token: l.token, symbol: symbolOf(c, l.token), collateral: rawStr(l.collateral), principal: rawStr(l.principal), repay: rawStr(l.cap),
     costBps: l.principal > 0n ? Number(((l.cap - l.principal) * 10_000n) / l.principal) : null, term: l.term,
-    fundedQuarters: l.filled, fundingDeadline: l.state === 1 ? l.fundingDeadline : null, fundedAt: l.fundedAt || null, endsAt,
+    fundedQuarters: l.filled, fundingDeadline: l.state === 1 ? l.fundingDeadline : null, fundedAt: l.fundedAt || null, endsAt, collateralPaused,
     lenders: p.slots.filter((s) => BigInt(s) !== 0n),
     // An instruction left on a retained generation's router is never run: none is shown as one that rolls the loan.
     actions, closedBy, autoRoll: instruction && !retired ? instructionOf(instruction) : null,
@@ -353,10 +388,13 @@ export async function portfolio(c: Ctx, wallet: Address, served: readonly Action
   const w = lower(wallet), now = c.now();
   // Every core a wallet's loans and credits can sit on: the USDG engines, then each lend asset's core (D251), current or retained.
   const cores = [...c.d.engines, ...[...c.d.generations, ...c.d.retired].filter((g) => !g.primary).map((g) => g.core)];
-  // Each core is read on its own: one whose index or chain read does not answer is named in `unread` (D412).
-  const coreReads = await eachRead(cores, async (e) => ({ credit: await c.chain.cashCredit(e.engine, wallet), loans: await walletLoans(c, e.engine, wallet) }),
-    (e) => `${lendAssetOf(c.d, e.engine).symbol} loans and credit on core ${e.engine}`);
-  const engines = coreReads.read.map(({ x: e, r }) => ({ e, ...r }));
+  // Each core is read on its own, its credit the chain's and its loans the index's: one that does not answer is named in
+  // `unread` (D412), and leaves the other.
+  const [creditReads, loanReads] = await Promise.all([
+    eachRead(cores, (e) => c.chain.cashCredit(e.engine, wallet), (e) => `${lendAssetOf(c.d, e.engine).symbol} credit on core ${e.engine}`),
+    eachRead(cores, (e) => walletLoans(c, e.engine, wallet), (e) => `${lendAssetOf(c.d, e.engine).symbol} loans on core ${e.engine}`),
+  ]);
+  const engines = cores.map((e) => ({ e, credit: creditReads.read.find(({ x }) => x === e)?.r ?? 0n, loans: loanReads.read.find(({ x }) => x === e)?.r ?? [] }));
   // Each loan's sGAGE is read and claimed at its engine's rewards contract, as the app's Portfolio reads it; a loan the
   // index allocated no reward owes none. A loan waiting for funding or running may roll by itself (D285), unless its
   // generation is one the release keeps for its positions alone, whose loans nothing rolls: such an open loan says so.
@@ -370,8 +408,8 @@ export async function portfolio(c: Ctx, wallet: Address, served: readonly Action
       putter && rollable && !same(p.loan.token, lendAssetOf(c.d, e.engine).token) ? c.chain.autoRoll(putter, id) : null,
     ]);
     return {
-      engine: e.engine, loanId: p.id, state: stateName(p.loan.state), symbol: symbolOf(c, p.loan.token), collateral: p.loan.collateral, principal: p.loan.principal, repay: p.loan.cap,
-      endsAt: p.loan.fundedAt > 0 ? p.loan.fundedAt + p.loan.term : null, sgageClaimable: rawStr(sgage),
+      engine: e.engine, loanId: p.id, state: stateName(p.loan.state), token: p.loan.token, symbol: symbolOf(c, p.loan.token), collateral: p.loan.collateral, principal: p.loan.principal, repay: p.loan.cap,
+      term: p.loan.term, endsAt: p.loan.fundedAt > 0 ? p.loan.fundedAt + p.loan.term : null, sgageClaimable: rawStr(sgage),
       autoRoll: rollsByItself(instruction, p.owner, now) || rollsByItself(putInstruction, p.owner, now),
       ...named(c, lendAssetOf(c.d, e.engine)),
       ...(retired && open ? { note: RETIRED_NOTE } : {}),
@@ -381,7 +419,7 @@ export async function portfolio(c: Ctx, wallet: Address, served: readonly Action
   const heldReads = await eachRead(listed.vaults, ({ v, g }) => indexerOf(c, g).get(`/intent/partners/vaults/${lower(v.address)}/position/${w}`, holding),
     ({ v }) => `the holding in ${vaultName(v, c.d)} (${v.address})`);
   const held = heldReads.read.map(({ x: { v, g }, r: h }) => ({ v, g, h }));
-  const unread = [...coreReads.unread, ...listed.unread, ...heldReads.unread];
+  const unread = [...creditReads.unread, ...loanReads.unread, ...listed.unread, ...heldReads.unread];
   const ready = await claimablePockets(c, held.map(({ g, h }) => ({ engine: g.core.engine, pockets: h.pockets, backing: h.backing })));
   // Where the release names the chain's exit desk (Intent D57): each holding's open exit, and what the desk owes the
   // wallet, read from the desk each factory bound, as the app's Portfolio reads them.
@@ -407,10 +445,11 @@ export async function portfolio(c: Ctx, wallet: Address, served: readonly Action
     wallet, loans, earn: holdings, usdgCredit: rawStr(credit), ...(lendsMore(c.d) ? { credits } : {}),
     ...(owed ? { exitOwed: owed.map((x) => ({ desk: x.desk, ...refOf(x.asset), amount: rawStr(x.amount) })) } : {}),
     ...(lp ? { lp } : {}),
-    ...(unread.length ? { unread } : {}),
+    ...(unread.length ? { status: "partial" as const, unread } : {}),
     note: (lp
       ? "Loans this wallet borrowed (open, running and closed) and its Earn holdings; sgageClaimable and rewards are raw sGAGE (18 decimals). gage_prepare_collect gathers what is ready to collect here. lp is the LP lane: its loans, what its core credits the wallet (lp_withdraw), and each LP vault's shares (raw, in its shareDecimals), their worth in raw USDG and the bonuses to claim (lp_claim_bonus)."
       : "Loans this wallet borrowed (open, running and closed) and its Earn holdings; sgageClaimable and rewards are raw sGAGE (18 decimals). gage_prepare_collect gathers what is ready to collect here.")
+      + (lp?.vaults.some((v) => "sgageClaimable" in v) ? " A reserve LP vault's sgageClaimable is claimed with lp_claim_rewards, apart from what gage_prepare_collect gathers; its null is a read that failed, as is a null valueUSDG." : "")
       + (owed ? ` ${EXIT_NOTE}` : "") + (unread.length ? ` ${UNREAD_NOTE}` : ""),
   };
 }
@@ -422,11 +461,13 @@ const UNREAD_NOTE = "unread names what could not be read just now: those loans, 
 const EXIT_NOTE = "exit is the wallet's open exit now from a vault (null for none): its shares (raw) and what they are worth (committed, raw), its stage (listed: loanId is for sale until listingEndsAt; next: earn_exit_list lists the next loan, and gage's keeper may; closed: exits are closed, and nothing is listed until they reopen; payable: the vault can pay the rest now, so withdraw it with earn_redeem; lapsed: nothing is listed or paid for it, and earn_exit_now commits again) and when its request lapses (lapsesAt); earn_exit_cancel withdraws it. exitOwed is what exit sales paid the wallet, raw, by desk and asset: earn_exit_collect receives it, and gage_prepare_collect gathers it with the rest.";
 
 export async function earnVaults(c: Ctx) {
-  const [vaults, links] = await Promise.all([allPartnerVaults(c), vaultLinks(c.indexer)]);
+  const [{ vaults, cut }, links] = await Promise.all([listedPartnerVaults(c), vaultLinks(c.indexer)]);
   const rows = await Promise.all(vaults.map(async ({ v, g }) => {
     const acc = await indexerOf(c, g).get(`/intent/partners/vaults/${lower(v.address)}/accounting`, accounting);
     return {
-      vault: v.address, name: vaultName(v, c.d), link: vaultLink(c, links, v.address), lends: v.fundingEnabled, performanceFeeBps: v.feeBps, longestLoanDays: v.maxLoanTerm / 86_400,
+      // A vault that buys running loans alone funds no new one: it says so, and is not a lender (D452).
+      vault: v.address, name: vaultName(v, c.d), manager: v.curator, link: vaultLink(c, links, v.address), lends: fundsLoans(v), ...(v.buysOnly === true ? { buysOnly: true as const } : {}),
+      performanceFeeBps: v.feeBps, longestLoanDays: v.maxLoanTerm / 86_400,
       tokens: v.assets.map((t) => symbolOf(c, t) ?? t),
       // A USDG vault keeps its USDG-named figures; another asset's are named for what they are, in its asset (D251).
       ...(g.primary
@@ -437,9 +478,11 @@ export async function earnVaults(c: Ctx) {
   }));
   return {
     vaults: rows,
+    // The most a list reads is 1,000 vaults a factory, in address order: past it, it says so.
+    ...(cut.length ? { status: "partial" as const, unread: cut } : {}),
     note: lendsMore(c.d)
-      ? "Each vault's figures are raw units of its asset (asset): usdgPerShare or assetsPerShare is what one whole share (10^18) redeems for now. Deposits lend through the vault's loans; withdrawals are paid up to its free cash."
-      : "usdgPerShare is the raw USDG one whole share (10^18) redeems for now. Deposits lend through the vault's loans; withdrawals are paid up to its free cash.",
+      ? "Each vault's figures are raw units of its asset (asset): usdgPerShare or assetsPerShare is what one whole share (10^18) redeems for now. Deposits lend through the vault's loans; withdrawals are paid up to its free cash. A vault's name is its manager's own text, and anyone may create a vault: choose by vault and manager."
+      : "usdgPerShare is the raw USDG one whole share (10^18) redeems for now. Deposits lend through the vault's loans; withdrawals are paid up to its free cash. A vault's name is its manager's own text, and anyone may create a vault: choose by vault and manager.",
   };
 }
 
@@ -453,7 +496,7 @@ const freeCashNote = (free: string, settling: string) =>
  * vault a new loan must leave free (`bufferBps`). Raw units of the vault's asset.
  */
 export async function vaultFreeCash(c: Ctx, i: { vault: string }) {
-  const { address, v, g } = await partner(c, i.vault);
+  const { address, v, g } = await listedPartner(c, i.vault);
   const [acc, links] = await Promise.all([
     indexerOf(c, g).get(`/intent/partners/vaults/${lower(address)}/accounting`, accounting),
     vaultLinks(c.indexer),

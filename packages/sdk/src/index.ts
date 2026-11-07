@@ -3,9 +3,9 @@
  * the caller's own signer, carries actions out: borrow, leverage, cancel, repay, cash out (D245), roll over by hand or by
  * itself (D285), puts where a lend asset offers them (open, close, roll), Earn deposits and withdrawals, collect, and on
  * mainnet a rating of gage (D302), and the LP lane where a release makes it public (D314, D315: loans against Uniswap v3
- * and v4, SushiSwap v3 and Ramses positions, and its vaults). On Robinhood Chain (4663,
- * `network: "mainnet"`, D260) and its testnet (46630, the default, D222), each serving the actions its deployment can
- * carry out (`actionsOn`: the testnet has no rollover router); on mainnet the tools that sign with an agent's own key
+ * and v4, SushiSwap v3, Ouro v3 and Ramses positions, and its vaults). On Robinhood Chain (4663,
+ * the default, `network: "mainnet"`, D260, D311) and its testnet (46630, D222), each serving the actions its deployment can
+ * carry out (`actionsOn`); on mainnet the tools that sign with an agent's own key
  * come only under spend limits (D225, D297). gage never holds a key, and private loans are never served (D209). A
  * release's public lend assets besides USDG (D251) are served too, every amount named in its own asset. Park and unpark
  * (D334): an out-of-range LP position pulled out on its own DEX into a partner vault, and back into a new range, as one
@@ -17,7 +17,7 @@ export { foundGenerationsRefresher, mergeFoundGenerations, proveFoundGenerations
 export { chainFor, MULTICALL3, robinhoodMainnet, robinhoodTestnet } from "./chains.js";
 export {
   createChain, type BatchCall, type Call, type Chain, type DeployedGenerationRead, type DexPosition, type FoundGenerationRead, type IntentFactoryState, type Loan, type LpFacts,
-  type LpLoan, type LpPoolConfig, type LpRegistryState, type LpVaultState, type OwnedPositions, type RehypoSourceRead, type Sent, type TokenConfig, type V4Position, type VaultBook,
+  type LpLoan, type LpPoolConfig, type LpRegistryState, type LpReserveState, type LpVaultState, type OwnedPositions, type RehypoSourceRead, type Sent, type TokenConfig, type V4Position, type VaultBook, type VaultManagerState,
 } from "./chain.js";
 export {
   chooseExitHolding, chooseExitLoan, EXIT_CONFIRM_SECONDS, EXIT_FALL_SECONDS, EXIT_GRACE_SECONDS, EXIT_KEEP_BPS, EXIT_LISTING_SECONDS, exitBook, exitCommitted, exitEligible, exitFit,
@@ -35,7 +35,7 @@ export { TESTNET_MANIFEST } from "./deployments/testnet.js";
 export {
   actionsOn, defaultsFor, MAINNET_DEFAULTS, networkNamed, TESTNET_DEFAULTS, type Beacon, type Network, type NetworkDefaults,
 } from "./networks.js";
-export { ApiError, refusalOf, requireThat } from "./errors.js";
+export { ApiError, refusalOf, requireThat, withoutUrls, type FailedCall } from "./errors.js";
 export {
   boundUnder, chooseSource, firstRunnable, fitsCap, keepsHeadroom, LOOP_HEADROOM_BPS, loopCall, loopCap, loopPayout, loopSpendable, parseLoopBuy, rankLoopQuotes,
   type LoopBase, type LoopBuyWant, type LoopCall, type LoopChoice, type LoopQuote, type ViaRoute,
@@ -59,8 +59,8 @@ export type { LpAmount, LpView } from "./lpPlans.js";
 export { lpSharesText, lpShareUnit } from "./lpShares.js";
 export { run, type Hold, type RunOptions, type RunResult, type SentStep, type SpendLimit } from "./run.js";
 export {
-  ACTIONS, actionInput, actionShapes, borrowQuoteInput, emptyInput, leverageQuoteInput, loanInput, lpQuoteInput, parseInput, putQuoteInput, reviewAdvance, reviewToken, signedShapes,
-  vaultInput, walletInput,
+  ACTIONS, actionInput, actionShapes, borrowQuoteInput, createVaultInput, emptyInput, leverageQuoteInput, loanInput, lpQuoteInput, parseInput, putQuoteInput, reviewAdvance, reviewToken, signedShapes,
+  vaultInput, vaultOnChainInput, walletInput,
   type ActionInput, type ActionName, type ActionRequest,
 } from "./schemas.js";
 export { privateKeySigner, viemSigner, type Signer, type SignerTransaction } from "./signer.js";
@@ -69,6 +69,7 @@ export {
   createPoolVaultsInput, NAME_MAX_BYTES, parsePoolName, poolsOf, poolTag, poolVaultName, poolVaultsInput,
   type PoolOf, type PoolSidePlan, type PoolSideVault, type PoolVaultsCreation,
 } from "./pools.js";
+export type { VaultCreation, VaultChange, VaultView } from "./vaults.js";
 export { batchChecksum, safeBatch, TX_BUILDER_VERSION, type SafeBatch } from "./safe.js";
 export { createUpstream, type Upstream } from "./upstream.js";
 export { aggregatorCallOk, KYBER_EXECUTOR, type SwapWant } from "./aggregatorCall.js";

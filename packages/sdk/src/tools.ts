@@ -10,8 +10,8 @@ import { LP_FORMATS } from "./lp.js";
 import { createPoolVaultsInput, poolVaultsInput } from "./pools.js";
 import { MAINNET_DEFAULTS } from "./networks.js";
 import {
-  actionShapes, borrowQuoteInput, emptyInput, leverageQuoteInput, loanInput, lpQuoteInput, parkPositionsInput, parseInput, putQuoteInput, signedShapes, vaultInput, walletInput, type ActionInput,
-  type ActionName,
+  actionShapes, borrowQuoteInput, createVaultInput, emptyInput, leverageQuoteInput, loanInput, lpQuoteInput, parkPositionsInput, parseInput, putQuoteInput, signedShapes, vaultInput, vaultOnChainInput, walletInput,
+  type ActionInput, type ActionName,
 } from "./schemas.js";
 import type { SpendLimit } from "./run.js";
 import type { Signer } from "./signer.js";
@@ -51,11 +51,16 @@ const TITLES: Record<ActionName, string> = {
   put_cancel_auto_roll: "Stop rolling a put over",
   lp_borrow: "Borrow against an LP position", lp_repay: "Repay an LP loan", lp_return_position: "Take an LP position back", lp_collect: "Collect an LP position's fees",
   lp_withdraw: "Withdraw LP credits", lp_deposit: "Deposit into an LP vault", lp_redeem: "Withdraw from an LP vault", lp_claim_bonus: "Claim an LP vault's bonus",
-  lp_roll: "Roll an LP loan over", lp_wrap: "Wrap Fables receipts into a position", lp_unwrap: "Unwrap a Fables position",
+  lp_claim_rewards: "Claim an LP vault's sGAGE", lp_roll: "Roll an LP loan over", lp_wrap: "Wrap Fables receipts into a position", lp_unwrap: "Unwrap a Fables position",
   lp_create_vault: "Open an LP vault", lp_vault_add_pool: "Add a pool to an LP vault", lp_vault_remove_pool: "Drop a pool from an LP vault",
   park: "Park an out-of-range position", unpark: "Unpark into a new position", rehypo_exit_now: "Exit a rehypo pool now",
   earn_exit_now: "Exit a partner vault now", earn_exit_list: "List an exit's next loan", earn_exit_cancel: "Cancel an exit", earn_exit_collect: "Collect what an exit paid",
+  create_vault: "Create a partner vault", vault_manage: "Manage a partner vault",
 };
+/** What creating a partner vault is, in each of its tools' words. */
+const CREATE_VAULT = "one partner vault of the wallet's own, with a free name, lending one asset (USDG, or a lend asset) against tokens of one universe: the wallet manages it for good, and it lends what depositors bring. Who may create: anyone while its generation's creation is open, otherwise a partner gage admitted";
+/** What managing a partner vault is, in each of its tools' words. */
+const MANAGE_VAULT = "its name, pause, automatic funding, priority fee ceiling, fee recipient, risk limits (a lower cap or higher floor applies at once; a looser one waits three hours, then apply), buying running loans, its tokens, and a running loan listed for sale, each field one transaction; what the vault has already is left out. For the vault's manager alone, read from the chain, no gage service asked. A manager cannot withdraw depositors' assets; a fee recipient other than the wallet takes fees not yet claimed too, and a loan listed for sale can sell for as little as book value plus half of what it has still to earn, which depositors bear";
 /** What a partner vault's exit now is (Intent D57), in each of its tools' words. */
 const EARN_EXIT = "for a holder whose balance is more than the vault can pay now: the wallet's vault shares (amount, raw in the vault's asset at today's share value; the whole balance when omitted) are committed at the chain's exit desk, approved to it for exactly those shares, and the desk lists one of the vault's loans: first the one whose price can fall furthest for this exit, then the smallest that covers what the vault cannot pay of them. Over ten minutes its price falls from book value plus 99% of what the loan has still to earn: only the part the vault cannot pay can reach book value, and the price falls no further than the wallet's own share of that loan can pay, since the wallet pays the buyer's discount, so the listing may not sell. The sale pays the wallet at today's share value in its own transaction, to collect with earn_exit_collect; the request lasts 24 hours. Refused while the vault can pay the amount now (withdraw it with earn_redeem), beside an exit already open, or while exits are closed. Like a withdrawal, it avoids losses on loans that default after the wallet leaves; the holders who stay bear them";
 /** What an exit's next listing, its cancel and its collect are (Intent D57), in each of their tools' words. */
@@ -84,6 +89,10 @@ const LP_WRAP = "every Fables receipt the wallet holds of one range (rangeId, ga
 const CURATED = "A wallet the LP registry lets open one (a curator it allows, or anyone once it opens vault creation) opens a vault through the lane's factory and curates it: it funds loans only in the pools of its mandate, a pool added funding three hours later and one dropped stopping at once (open loans run on); the curator never touches its lenders' money";
 /** What an LP vault's bonus is. */
 const BONUS = "what a defaulted LP loan's sale brought above its book value, shared by the lenders by their share of the vault and the time they held it while the loan ran";
+/** What a reserve LP vault's sGAGE is (D454). */
+const LP_SGAGE = "what its loans earned its holders, outside the share price and with no fee, each holder's by its share of the vault while it arrived, shares held now or not; it moves no USDG. Refused on a vault with no reserve, which pays no sGAGE, and with nothing to claim";
+/** What an LP vault's redemption takes when no shares are named, and from what (D454). */
+const LP_REDEEM = "every share it can pay now when shares is omitted (from its free cash, and a reserve vault's reserve)";
 /** What a put is, in each of its tools' words (docs/api.md "Puts on lend-asset generations"). */
 const PUT = "a loan of a lend asset against USDG, opened with put_open: it gains as the asset falls, and its loss stops at the USDG put in";
 /** What a rating is (D302), in each of its tools' words: gage's entry exists on mainnet only, where the tools are served. */
@@ -114,8 +123,9 @@ const PREPARE: Record<ActionName, string> = {
   lp_collect: "Prepare collecting a running LP loan's trading fees (a native ETH pool's as WETH), and a Ramses position's rewards, to the wallet; the liquidity stays in place.",
   lp_withdraw: "Prepare withdrawing what the LP lane's core credits the wallet (a loan's USDG, fees, rewards), every token when token is omitted.",
   lp_deposit: "Prepare a deposit of USDG into an LP vault, which lends against LP positions in the pools of its mandate. Refused while the vault is impaired, its deposits are closed or the registry no longer lets it lend.",
-  lp_redeem: "Prepare withdrawing from an LP vault the wallet's own shares (those it received by transfer too), every share its free cash pays when shares is omitted.",
+  lp_redeem: `Prepare withdrawing from an LP vault the wallet's own shares (those it received by transfer too), ${LP_REDEEM}.`,
   lp_claim_bonus: `Prepare claiming an LP vault's bonus (${BONUS}), every loan with one when loanId is omitted.`,
+  lp_claim_rewards: `Prepare claiming a reserve LP vault's sGAGE: ${LP_SGAGE}.`,
   lp_roll: `Prepare rolling an LP loan over: ${LP_ROLL}.`,
   lp_wrap: `Prepare wrapping Fables receipts into a position: ${LP_WRAP}.`,
   lp_unwrap: "Prepare unwrapping a Fables position the wallet holds back into its receipts, with their fees less the claim fee Fables keeps.",
@@ -129,6 +139,8 @@ const PREPARE: Record<ActionName, string> = {
   earn_exit_list: `Prepare listing the next loan for ${EXIT_LIST}.`,
   earn_exit_cancel: `Prepare cancelling ${EXIT_CANCEL}.`,
   earn_exit_collect: `Prepare collecting ${EXIT_COLLECT}.`,
+  create_vault: `Prepare creating ${CREATE_VAULT}.`,
+  vault_manage: `Prepare managing a partner vault: ${MANAGE_VAULT}.`,
 };
 const DO: Record<ActionName, string> = {
   borrow: "Borrow: pledge a token, receive USDG (or the lend asset named by lendAsset), repay a fixed amount of it within the term. Use the prepare object of gage_borrow_quote, without its action.",
@@ -154,8 +166,9 @@ const DO: Record<ActionName, string> = {
   lp_collect: "Collect a running LP loan's trading fees (a native ETH pool's as WETH), and a Ramses position's rewards, to the wallet; the liquidity stays in place.",
   lp_withdraw: "Withdraw what the LP lane's core credits the wallet (a loan's USDG, fees, rewards), every token when token is omitted.",
   lp_deposit: "Deposit USDG into an LP vault, which lends against LP positions in the pools of its mandate. Refused while the vault is impaired, its deposits are closed or the registry no longer lets it lend.",
-  lp_redeem: "Withdraw from an LP vault the wallet's own shares (those it received by transfer too), every share its free cash pays when shares is omitted.",
+  lp_redeem: `Withdraw from an LP vault the wallet's own shares (those it received by transfer too), ${LP_REDEEM}.`,
   lp_claim_bonus: `Claim an LP vault's bonus (${BONUS}), every loan with one when loanId is omitted.`,
+  lp_claim_rewards: `Claim a reserve LP vault's sGAGE: ${LP_SGAGE}.`,
   lp_roll: `Roll an LP loan over: ${LP_ROLL}.`,
   lp_wrap: `Wrap Fables receipts into a position: ${LP_WRAP}.`,
   lp_unwrap: "Unwrap a Fables position the wallet holds back into its receipts, with their fees less the claim fee Fables keeps.",
@@ -169,6 +182,8 @@ const DO: Record<ActionName, string> = {
   earn_exit_list: `List the next loan for ${EXIT_LIST}.`,
   earn_exit_cancel: `Cancel ${EXIT_CANCEL}.`,
   earn_exit_collect: `Collect ${EXIT_COLLECT}.`,
+  create_vault: `Create ${CREATE_VAULT}.`,
+  vault_manage: `Manage a partner vault: ${MANAGE_VAULT}.`,
 };
 
 const READ ={ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
@@ -192,6 +207,10 @@ export function poolVaultTools(gage: Gage): GageTool[] {
       poolVaultsInput, READ, (i) => gage.poolVaults(i)),
     tool("gage_create_pool_vaults", "Create pool vaults", "The calls that create a DEX pool's vaults on gage, one for each pool token gage lends, each on its own factory, from any curator while its creation is open (mainnet's since 5 November 2026), otherwise one gage admitted as a partner: what both share named once (fee, longest loan, Loan grade floor, priority fee), and for each token its largest loan and the cash it keeps free. Neither vault lends against the pool's own two tokens unless a side names one and allowPoolTokens is true. Answers the calls for one wallet batch (EIP-5792, atomic) and the same as a Safe{Wallet} Transaction Builder file (safeBatch), each simulated from the curator now; a token gage does not lend gets no vault, and the answer says why. Never signs.",
       createPoolVaultsInput, READ, (i) => gage.createPoolVaults(i)),
+    tool("gage_create_partner_vault", "Create a partner vault", `The call that creates ${CREATE_VAULT}. Answers the call for a wallet (simulated from the curator now) and the same as a Safe{Wallet} Transaction Builder file (safeBatch). Never signs; gage_create_vault signs with this server's own wallet, where it has one.`,
+      createVaultInput, READ, (i) => gage.createVault(i)),
+    tool("gage_vault_on_chain", "A partner vault, from the chain", "One partner vault read from the chain alone, gage's index not asked, so it answers while the index does not: which generation, its book, whether a settlement is due, its manager's settings and what waits (the figures Manage shows), and with a wallet its shares, what they are worth, what the vault can pay it now and the call that withdraws that. Signs nothing.",
+      vaultOnChainInput, READ, (i) => gage.vaultOnChain(i)),
   ];
 }
 
@@ -205,12 +224,12 @@ export function gageTools(gage: Gage, options: ToolOptions = {}): GageTool[] {
   const note = options.prepareNote ?? "Returns the next unsigned transaction; never signs.";
   const tools: GageTool[] = [
     tool("gage_capabilities", "gage capabilities", "Chain, contracts, allowed loan terms, fees, the rules and any lend assets besides USDG. Start here.", emptyInput, READ, () => gage.capabilities()),
-    tool("gage_assets", "Collateral gage takes", "Tokens gage takes as collateral now: each one's minimum pledge, its most per loan where one is set (maxPerLoan, null where there is none), whether leverage buys it and its Borrow link on gage.cash; a row names the lend asset it is borrowed in, once there is more than USDG.", emptyInput, READ, () => gage.assets()),
+    tool("gage_assets", "Collateral gage takes", "Tokens gage admits as collateral now: each one's minimum pledge, its most per loan where one is set (maxPerLoan, null where there is none), whether leverage buys it, how many partner vaults lend against it now (vaults: 0 means none does yet, null that gage's index cannot say; a vault that buys running loans alone funds none and is not counted), a stock's display multiplier (uiMultiplier; amounts here are raw) and its Borrow link on gage.cash; a row names the lend asset it is borrowed in, once there is more than USDG.", emptyInput, READ, () => gage.assets()),
     tool("gage_borrow_quote", "Borrow quote", "The largest loan the partner vaults fund now for at most maxCollateral of a token, at the lowest fixed cost they accept; or one exact loan (collateral and principal) at the lowest cost that funds it now, or at your own costBps, with what each Loan grade costs; in USDG or the lend asset named, with a prepare object for gage_prepare_borrow.", borrowQuoteInput, READ, (i) => gage.borrowQuote(i)),
     tool("gage_leverage_quote", "Leverage quote", "Preview a leveraged loop for a pledge and a multiple: amounts, cost and the most the purchase costs. Signs nothing.", leverageQuoteInput, READ, (i) => gage.leverageQuote(i)),
     tool("gage_loan", "Loan", "One loan: state, amounts, deadlines, what can be done with it now (here, or on gage.cash for an action this server does not serve), its standing instruction to roll by itself, and what closed it (a roll or a cash-out).", loanInput, READ, (i) => gage.loan(i)),
     tool("gage_portfolio", "Portfolio", "A wallet's loans (each one's sGAGE to claim, raw, and whether it rolls by itself), Earn holdings and credits (USDG, and each lend asset's apart); where a release names the chain's exit desk, each holding's open exit now and where it stands, and what exit sales paid the wallet. A core or vault that could not be read just now is named in unread, never shown as empty.", walletInput, READ, (i) => gage.portfolio(i.wallet)),
-    tool("gage_earn_vaults", "Earn vaults", "The partner vaults that lend: tokens, fees, size, free cash, share value and each one's link on gage.cash.", emptyInput, READ, () => gage.earnVaults()),
+    tool("gage_earn_vaults", "Earn vaults", "The partner vaults that take deposits now, in each current generation: each one's manager, tokens, fees, size, free cash, share value and link on gage.cash; lends is false, with buysOnly true, for one that buys running loans alone. Not every vault: LP vaults are gage_lp_vaults', and the withdraw-only vaults of replaced generations and gage's earlier Earn strategies are not listed, so these sizes do not add up to what gage's vaults hold.", emptyInput, READ, () => gage.earnVaults()),
     tool("gage_vault_free_cash", "Vault free cash", "One partner vault's free cash: what withdrawals are paid from now, what comes back to it as its loans end, by day, and what loans past their end bring back once settled, only if their borrowers repay; and the share of the vault a new loan must leave free (bufferBps).", vaultInput, READ, (i) => gage.vaultFreeCash(i)),
   ];
   // Where puts open, their quote: a read beside the others, served with put_open alone, so a catalogue without puts is as before.
@@ -228,7 +247,7 @@ export function gageTools(gage: Gage, options: ToolOptions = {}): GageTool[] {
         lpQuoteInput, READ, (i) => gage.lpQuote(i)),
       tool("gage_lp_loans", "LP loans", "A wallet's LP loans (state, amounts, end, its position now, what can be done with it now) and what the lane's core credits the wallet.",
         walletInput, READ, (i) => gage.lpLoans(i.wallet)),
-      tool("gage_lp_vaults", "LP vaults", "The LP vaults that lend against LP positions, the release's and those curators opened: size, free cash, loans out, share value, fee, its curator, the pools it funds (its mandate, in plain words in funds), whether the registry still lets it lend, and whether each takes deposits and pays out now.",
+      tool("gage_lp_vaults", "LP vaults", "The LP vaults that lend against LP positions, the release's and those curators opened: size, free cash, loans out, share value, fee, its curator, the pools it funds (its mandate, in plain words in funds), whether the registry still lets it lend, and whether each takes deposits and pays out now; a reserve vault's reserve too: what it holds, what the vault can pay out now and the least a loan must cost it.",
         emptyInput, READ, () => gage.lpVaults()),
     );
   }

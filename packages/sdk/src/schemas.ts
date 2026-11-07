@@ -1,8 +1,18 @@
+import { isAddress } from "viem";
 import { z } from "zod";
 import { ApiError } from "./errors.js";
 
 /** Inputs of every route and tool, one definition for the SDK, HTTP, MCP and the review store. Raw amounts are decimal strings. */
-export const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "an 0x address");
+/** An address as given, or in lower case where its letters' case is no checksum: an agent's or a sheet's mis-cased copy still names it. */
+export const anyCase = (value: string) => (isAddress(value) ? value : value.toLowerCase());
+export const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "an 0x address").overwrite(anyCase);
+/**
+ * An address nothing on chain or in gage checks before money goes there: all one case, or a checksum that holds. A copy
+ * with a digit wrong fails its checksum, and is refused rather than read.
+ */
+const destination = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "an 0x address")
+  .refine((v) => isAddress(v) || v.slice(2) === v.slice(2).toLowerCase() || v.slice(2) === v.slice(2).toUpperCase(), "an address whose checksum fails: check it, or write it in lower case")
+  .overwrite(anyCase);
 export const raw = z.string().regex(/^[1-9]\d{0,77}$/, "a positive raw integer as a decimal string");
 export const loanId = z.string().regex(/^\d{1,78}$/, "a loan id as a decimal string");
 export const term = z.number().int().positive().describe("Loan term in seconds, one of the terms gage_capabilities lists");
@@ -21,6 +31,10 @@ export const emptyInput = z.object({}).strict();
 export const walletInput = z.object({ wallet: address.describe("The wallet that will sign") }).strict();
 export const loanInput = z.object({ loanId, engine: address.optional().describe("The engine; the current core when omitted") }).strict();
 export const vaultInput = z.object({ vault: address.describe("A partner vault, as gage_earn_vaults lists it") }).strict();
+export const vaultOnChainInput = z.object({
+  vault: address.describe("A partner vault"),
+  wallet: address.optional().describe("A holder: adds its shares, what they are worth, what the vault can pay it now, and the call that withdraws that"),
+}).strict();
 export const borrowQuoteInput = z.object({
   token: address, term, wallet: address.optional(), lendAsset,
   maxCollateral: raw.optional().describe("Most of the token to pledge, raw units: quotes the largest loan the vaults fund for it, at the lowest fixed cost they accept"),
@@ -88,9 +102,9 @@ const feedback = z.object({
   wallet: address, score: z.number().int().min(0).max(100).describe("Your own rating of gage, a whole number from 0 (worst) to 100 (best)"),
 }).strict();
 
-// The LP lane (docs/api.md "LP lane", D314, D315, D316, D317): USDG loans against Uniswap v3 and v4, SushiSwap v3, Ramses
+// The LP lane (docs/api.md "LP lane", D314, D315, D316, D317): USDG loans against Uniswap v3 and v4, SushiSwap v3, Ouro v3, Ramses
 // V3 and Fables positions, their rolls, Fables receipts wrapped into positions, and its vaults.
-const lpAdapter = address.describe("The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's)");
+const lpAdapter = address.describe("The position's adapter: one gage_capabilities lists under lpLane.adapters (Uniswap v3, SushiSwap v3, Ouro v3, Ramses V3, Uniswap v4 or Fables; gage_lp_positions names each position's)");
 const tokenId = z.string().regex(/^\d{1,78}$/, "a position id as a decimal string").describe("The position's id: its NFT's token id at the adapter's position manager (gage_lp_positions)");
 const rangeId = z.string().regex(/^\d{1,78}$/, "a range id as a decimal string").describe("A Fables range's id: the receipts gage_lp_positions lists under fablesReceipts");
 const lpTerm = z.number().int().positive().describe("Loan term in seconds, one of gage_capabilities lpLane.terms");
@@ -119,13 +133,14 @@ const lpWithdraw = z.object({ wallet: address, token: address.optional().describ
 const lpDeposit = z.object({ wallet: address, vault: lpVault, amount: raw.describe("USDG to deposit, raw units (6 decimals)"), maxSlippageBps: slippage }).strict();
 const lpRedeem = z.object({
   wallet: address, vault: lpVault,
-  shares: raw.optional().describe("Shares to redeem, raw, in the vault's own decimals (its shareDecimals in gage_lp_vaults and the portfolio, 18 or 12: 10^shareDecimals shares were worth 1 USDG when the vault opened); every share the vault's free cash pays when omitted"),
+  shares: raw.optional().describe("Shares to redeem, raw, in the vault's own decimals (its shareDecimals in gage_lp_vaults and the portfolio, 18 or 12: 10^shareDecimals shares were worth 1 USDG when the vault opened); every share the vault can pay now when omitted (from its free cash, and a reserve vault's reserve)"),
   maxSlippageBps: slippage,
 }).strict();
 const lpClaimBonus = z.object({
   wallet: address, vault: lpVault,
   loanId: lpLoanId.optional().describe("The defaulted LP loan whose bonus to claim; every loan of the vault with a bonus for this wallet when omitted"),
 }).strict();
+const lpClaimRewards = z.object({ wallet: address, vault: lpVault.describe("A reserve LP vault: one gage_lp_vaults lists with a reserve") }).strict();
 // A curator's LP vault (D318): opened through the lane's factory, funding only the pools of its mandate.
 const lpPoolRef = z.object({
   adapter: address.describe("The pool's adapter (gage_capabilities lpLane.pools)"), pool: address.describe("The pool, as gage_capabilities lpLane.pools names it under that adapter"),
@@ -139,9 +154,66 @@ const lpCreateVault = z.object({
 }).strict();
 const lpVaultPool = z.object({ wallet: address, vault: lpVault.describe("An LP vault this wallet curates (gage_lp_vaults curator)"), adapter: lpPoolRef.shape.adapter, pool: lpPoolRef.shape.pool }).strict();
 
+// A partner vault of one's own, as gage.cash's Create makes it, and its curator's calls, as its Manage sends them.
+const vaultNameText = z.string().trim().min(1).regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]{1,48}$/u, "1 to 48 bytes, no control or invisible characters");
+const universe = z.enum(["rwa", "ecosystem"]);
+const createVaultFields = {
+  name: vaultNameText.describe("The vault's name, as depositors see it: 1 to 48 bytes, no control or invisible characters. Its manager may change it"),
+  asset: address.optional().describe("The asset the vault lends: USDG when omitted, or a lend asset gage_capabilities lists (its token address)"),
+  universe: universe.optional().describe("What it lends against: rwa (stocks and commodities) or ecosystem (meme and utility coins); it can never lend against both. rwa when omitted, a non-stable asset's vault always ecosystem"),
+  collateral: z.array(address).min(1).max(64).optional().describe("The tokens it lends against, of one universe; every token its generation admits in `universe` when omitted"),
+  term: z.union([z.literal(604_800), z.literal(1_814_400)]).describe("The longest loan it funds, in seconds: 604800 (7 days) or 1814400 (21 days)"),
+  feeBps: z.number().int().min(500).max(1_500).describe("The performance fee on each loan's profit, bps, 500 to 1500; the protocol receives 10% of it. Fixed for good"),
+  maxLoan: raw.describe("The most it puts into one loan, raw units of its asset (USDG: 6 decimals)"),
+  cashKeptFreeBps: z.number().int().min(0).max(10_000).optional().describe("The share of the vault a new loan must leave free, in cash or in its reserve, bps; 0 when omitted"),
+  priorityFeeBps: z.number().int().min(0).max(5_000).optional().describe("The most it pays the protocol for a loan, bps of its profit, 0 to 5000: the vault paying most is funded first. 2000 when omitted"),
+  minRateGrade: z.number().int().min(0).max(4).optional().describe("The lowest Loan grade it funds, 0 (any) to 4 (A, the model's price or more). 3 (B, 90% of it) when omitted"),
+  buyLoans: z.object({ extraBps: z.number().int().min(0).max(10_000).describe("The extra return a year asked above the model's, bps") }).strict().optional()
+    .describe("It buys running loans other vaults of its generation sell, when they pay at least the model's return plus this; off when omitted"),
+  buysOnly: z.boolean().optional().describe("true: it buys running loans alone and funds no new loan, for good; needs buyLoans"),
+};
+export const createVaultInput = z.object({
+  curator: address.describe("Who manages the vault, for good: the wallet or Safe that sends the call. Any address while its generation's creation is open (mainnet's since 5 November 2026), otherwise one gage admitted as a partner there"),
+  ...createVaultFields,
+}).strict();
+const createVault = z.object({ wallet: address.describe("Who manages the vault, for good: the wallet that signs"), ...createVaultFields }).strict();
+/** The risk limits a manager moves, in the asset policy's order (`IntentLimit`). */
+const limitName = z.enum(["maxLoan", "maxPerTokenBps", "cashKeptFreeBps", "minRateGrade", "stockBps", "memeBps", "ecosystemBps", "commodityBps"]);
+const share = z.number().int().min(0).max(10_000);
+const vaultManage = z.object({
+  wallet: address.describe("The vault's manager: the one wallet its curator's calls take"),
+  vault: address.describe("A partner vault this wallet manages"),
+  name: vaultNameText.optional().describe("A new name, as depositors see it: 1 to 48 bytes, no control or invisible characters"),
+  paused: z.boolean().optional().describe("true pauses new investment (deposits, funding and loan sales); withdrawals go on. false resumes it"),
+  fillersOpen: z.boolean().optional().describe("Whether gage's automatic funding may fund loans within the vault's mandate; open loans are untouched either way"),
+  priorityFeeBps: z.number().int().min(0).max(5_000).optional().describe("The most it pays the protocol for a loan, bps of its profit, 0 to 5000; applies at once, up or down"),
+  feeRecipient: destination.optional().describe("Where the manager's share of the performance fee is paid, what is not yet claimed included; not the vault itself. In mixed case, its checksum must hold"),
+  maxLoan: z.string().regex(/^\d{1,78}$/, "a raw integer as a decimal string").optional().describe("The most it puts into one loan, raw units of its asset. Lower applies at once, higher waits three hours"),
+  maxPerTokenBps: share.optional().describe("The most of the vault lent against one token, bps. Lower applies at once, higher waits three hours"),
+  cashKeptFreeBps: share.optional().describe("The share of the vault a new loan must leave free, in cash or in its reserve, bps. Higher applies at once, lower waits three hours"),
+  minRateGrade: z.number().int().min(0).max(4).optional().describe("The lowest Loan grade it funds, 0 (any) to 4 (A). Higher applies at once, lower waits three hours"),
+  stockBps: share.optional().describe("The most of the vault lent against stocks, bps; a category outside its universe stays closed. Lower applies at once, higher waits three hours"),
+  memeBps: share.optional().describe("The same for meme coins"),
+  ecosystemBps: share.optional().describe("The same for utility coins"),
+  commodityBps: share.optional().describe("The same for commodities"),
+  buyLoans: z.object({
+    enabled: z.boolean(), extraBps: z.number().int().min(0).max(10_000).optional().describe("The extra return a year asked above the model's, bps; the one set now when omitted"),
+  }).strict().optional().describe("Whether it buys running loans. Stopping, or asking more, applies at once; starting, or asking less, waits three hours"),
+  addTokens: z.array(address).max(64).optional().describe("Tokens to lend against, of its universe: each waits three hours, then applyTokens"),
+  removeTokens: z.array(address).max(64).optional().describe("Tokens to stop lending against, at once; open loans run on"),
+  applyTokens: z.array(address).max(64).optional().describe("Tokens added whose three hours are over: they lend from now"),
+  dropTokens: z.array(address).max(64).optional().describe("Tokens added and still waiting: dropped"),
+  apply: z.array(z.union([limitName, z.literal("buyLoans")])).max(9).optional().describe("Changes whose three hours are over, by the field that made them: they apply now"),
+  drop: z.array(z.union([limitName, z.literal("buyLoans")])).max(9).optional().describe("Changes still waiting, by the field that made them: dropped"),
+  listLoan: z.object({
+    loanId, hours: z.number().int().min(1).max(8_760).optional().describe("How long it stays for sale, in hours, at most to the loan's end; 24 when omitted"),
+  }).strict().optional().describe("Lists a running loan of the vault for sale to other vaults; mandate 13. Its price falls in about five minutes to book value plus half of what it has still to earn, and what a sale gives up, the vault's depositors bear"),
+  cancelListing: loanId.optional().describe("Takes a loan of the vault off sale"),
+}).strict();
+
 // Park and unpark (D334): an out-of-range LP position pulled out on its own DEX into a partner vault, and a new one minted
 // from a vault's withdrawal, both from the wallet with no gage contract between.
-const parkManager = address.describe("Where the position is held: its position manager (a Uniswap v3, SushiSwap v3 or Ramses V3 NonfungiblePositionManager, or a Uniswap v4 PositionManager), or a Fables hook for its receipts (gage_park_positions manager)");
+const parkManager = address.describe("Where the position is held: its position manager (a Uniswap v3, SushiSwap v3, Ouro v3 or Ramses V3 NonfungiblePositionManager, or a Uniswap v4 PositionManager), or a Fables hook for its receipts (gage_park_positions manager)");
 export const parkId = z.string().regex(/^\d{1,78}$/, "a position id as a decimal string").describe("The position's id at its manager (gage_park_positions id): its NFT's token id, or a Fables range's id");
 const parkShape = z.object({
   wallet: address, manager: parkManager, id: parkId,
@@ -193,10 +265,11 @@ export const actionShapes = {
   earn_deposit: deposit, earn_redeem: redeem, collect: walletInput, feedback,
   put_open: putOpen, put_close: putClose, put_roll: putRoll, put_auto_roll: putAutoRoll, put_cancel_auto_roll: putLoan,
   lp_borrow: lpBorrow, lp_repay: lpLoan, lp_return_position: lpLoan, lp_collect: lpLoan, lp_withdraw: lpWithdraw, lp_deposit: lpDeposit, lp_redeem: lpRedeem,
-  lp_claim_bonus: lpClaimBonus, lp_roll: lpRoll, lp_wrap: lpWrap, lp_unwrap: lpUnwrap,
+  lp_claim_bonus: lpClaimBonus, lp_claim_rewards: lpClaimRewards, lp_roll: lpRoll, lp_wrap: lpWrap, lp_unwrap: lpUnwrap,
   lp_create_vault: lpCreateVault, lp_vault_add_pool: lpVaultPool, lp_vault_remove_pool: lpVaultPool,
   park: parkShape, unpark: unparkShape, rehypo_exit_now: rehypoExit,
   earn_exit_now: earnExit, earn_exit_list: earnExitOf, earn_exit_cancel: earnExitOf, earn_exit_collect: earnExitCollect,
+  create_vault: createVault, vault_manage: vaultManage,
 } as const;
 /** The same actions for a signer (D224): the signer's own wallet acts, so no input names one. */
 export const signedShapes = {
@@ -207,12 +280,13 @@ export const signedShapes = {
   put_auto_roll: putAutoRoll.omit({ wallet: true }), put_cancel_auto_roll: putLoan.omit({ wallet: true }),
   lp_borrow: lpBorrow.omit({ wallet: true }), lp_repay: lpLoan.omit({ wallet: true }), lp_return_position: lpLoan.omit({ wallet: true }),
   lp_collect: lpLoan.omit({ wallet: true }), lp_withdraw: lpWithdraw.omit({ wallet: true }), lp_deposit: lpDeposit.omit({ wallet: true }),
-  lp_redeem: lpRedeem.omit({ wallet: true }), lp_claim_bonus: lpClaimBonus.omit({ wallet: true }), lp_roll: lpRoll.omit({ wallet: true }),
+  lp_redeem: lpRedeem.omit({ wallet: true }), lp_claim_bonus: lpClaimBonus.omit({ wallet: true }), lp_claim_rewards: lpClaimRewards.omit({ wallet: true }), lp_roll: lpRoll.omit({ wallet: true }),
   lp_wrap: lpWrap.omit({ wallet: true }), lp_unwrap: lpUnwrap.omit({ wallet: true }),
   lp_create_vault: lpCreateVault.omit({ wallet: true }), lp_vault_add_pool: lpVaultPool.omit({ wallet: true }), lp_vault_remove_pool: lpVaultPool.omit({ wallet: true }),
   park: parkShape.omit({ wallet: true }), unpark: unparkShape.omit({ wallet: true }), rehypo_exit_now: rehypoExit.omit({ wallet: true }),
   earn_exit_now: earnExit.omit({ wallet: true }), earn_exit_list: earnExitOf.omit({ wallet: true }), earn_exit_cancel: earnExitOf.omit({ wallet: true }),
   earn_exit_collect: earnExitCollect.omit({ wallet: true }),
+  create_vault: createVault.omit({ wallet: true }), vault_manage: vaultManage.omit({ wallet: true }),
 } as const;
 export type ActionName = keyof typeof actionShapes;
 export const ACTIONS = Object.keys(actionShapes) as ActionName[];
@@ -243,6 +317,7 @@ export const actionInput = z.discriminatedUnion("action", [
   lpDeposit.extend({ action: z.literal("lp_deposit") }),
   lpRedeem.extend({ action: z.literal("lp_redeem") }),
   lpClaimBonus.extend({ action: z.literal("lp_claim_bonus") }),
+  lpClaimRewards.extend({ action: z.literal("lp_claim_rewards") }),
   lpRoll.extend({ action: z.literal("lp_roll") }),
   lpWrap.extend({ action: z.literal("lp_wrap") }),
   lpUnwrap.extend({ action: z.literal("lp_unwrap") }),
@@ -256,6 +331,8 @@ export const actionInput = z.discriminatedUnion("action", [
   earnExitOf.extend({ action: z.literal("earn_exit_list") }),
   earnExitOf.extend({ action: z.literal("earn_exit_cancel") }),
   earnExitCollect.extend({ action: z.literal("earn_exit_collect") }),
+  createVault.extend({ action: z.literal("create_vault") }),
+  vaultManage.extend({ action: z.literal("vault_manage") }),
 ]);
 export type ActionInput = z.output<typeof actionInput>;
 type Without<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;

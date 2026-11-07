@@ -92,6 +92,9 @@ describe("a deployment with puts", () => {
     const caps = await capabilities(ctx({ d: d() }));
     expect(caps.lendAssets?.[0]).toMatchObject({ token: GLDX, loopRouter: GLD_LOOP, putRouter: getAddress(GLD_PUT) });
     expect(caps.rules).toEqual(expect.arrayContaining([LEND_ASSET_RULE, PUT_RULE]));
+    const fewer = await capabilities(ctx({ d: d() }), ["borrow", "collect"]);
+    expect(fewer.rules).toContain(LEND_ASSET_RULE);
+    expect(fewer.rules).not.toContain(PUT_RULE);
     expect(caps.actions).toContain("put_open");
     const rows = (await assets(ctx({ d: d() }))).assets;
     expect(rows.map((r) => [r.symbol, (r as { asset?: { symbol: string } }).asset?.symbol, r.leverage])).toEqual([["NVDAx", "USDG", true], ["SCHIFFYx", "GLDx", false], ["USDG", "GLDx", false]]);

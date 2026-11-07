@@ -4,7 +4,7 @@
  * counts every amount in its asset, checks on chain that the core or vault pays in it before any write, keeps leverage
  * USDG's, and never sends a full-balance redemption an 18-decimal vault cannot pay after a loss.
  */
-import { decodeFunctionData, erc20Abi } from "viem";
+import { decodeFunctionData, erc20Abi, getAddress } from "viem";
 import { describe, expect, it } from "vitest";
 import { engineAbi, partnerVaultAbi } from "../src/abi.js";
 import { engineOf, lendsMore, parseDeployment } from "../src/deployment.js";
@@ -99,6 +99,17 @@ describe("a loan in GLDx", () => {
     expect(today.view).not.toHaveProperty("engine");
   });
 
+  it("counts a token listed nowhere in its own decimals, not a guess", async () => {
+    const stranger = A(0x7777);
+    const indexer = fakeUpstream({ "/v2/positions/": position("4", { engine: GLD_CORE }) });
+    const chain = fakeChain({
+      loan: () => Promise.resolve(chainLoan({ token: stranger, principal: E18 / 2n, cap: 504_000_000_000_000_001n, collateral: 100n * E18 })),
+      tokenInfo: () => Promise.resolve({ symbol: "ANY", decimals: 9 }),
+    });
+    const p = await prepareNext(ctx({ d: d(), indexer, chain }), { action: "reclaim", wallet: WALLET, loanId: "4", engine: GLD_CORE });
+    expect(p.view).toMatchObject({ action: "reclaim", symbol: "tokens", decimals: 9 });
+  });
+
   it("is repaid in GLDx: the exact GLDx approval to its core, rounded up where it is shown, then the repayment", async () => {
     const indexer = fakeUpstream({ "/v2/positions/": position("4", { engine: GLD_CORE }) });
     const running = () => Promise.resolve(chainLoan({ token: SCHIFFY, principal: E18 / 2n, cap: 504_000_000_000_000_001n, collateral: 100n * E18 }));
@@ -129,7 +140,7 @@ describe("a GLDx vault", () => {
     expect(decodeFunctionData({ abi: erc20Abi, data: p.next!.transaction.data }).args).toEqual([GLD_VAULT, 5n * E18]);
     expect(p.summary.title).toMatch(/^Deposit 5 GLDx into /);
     expect(p.summary.rows).toContainEqual({ label: "Taking it out", value: "Any time, in GLDx, up to the vault's free GLDx" });
-    expect(p.view).toMatchObject({ action: "earn_deposit", vault: GLD_VAULT, amount: String(5n * E18), asset: GLD });
+    expect(p.view).toMatchObject({ action: "earn_deposit", vault: GLD_VAULT, manager: A(1), amount: String(5n * E18), asset: GLD });
   });
 
   it("says its smallest deposit in GLDx, and refuses a vault that no longer takes GLDx", async () => {
@@ -309,7 +320,7 @@ describe("collecting across generations", () => {
 describe("the reads", () => {
   it("list GLDx among the capabilities, with its core, factory, terms and the rule it brings", async () => {
     const caps = await capabilities(ctx({ d: d() }));
-    expect(caps.lendAssets).toEqual([{ token: GLDX, symbol: "GLDx", decimals: 18, stable: false, core: GLD_CORE, factory: GLD_FACTORY, terms: [{ seconds: 604_800, days: 7 }, { seconds: 1_814_400, days: 21 }] }]);
+    expect(caps.lendAssets).toEqual([{ token: GLDX, symbol: "GLDx", decimals: 18, stable: false, core: GLD_CORE, factory: GLD_FACTORY, terms: [{ seconds: 604_800, days: 7 }, { seconds: 1_814_400, days: 21 }], cashoutRouter: getAddress(A(0xf5)) }]);
     expect(caps.rules).toContain(LEND_ASSET_RULE);
     const today = await capabilities(ctx());
     expect(today).not.toHaveProperty("lendAssets");

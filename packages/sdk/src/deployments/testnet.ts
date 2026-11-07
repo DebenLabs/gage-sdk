@@ -466,7 +466,9 @@ export const TESTNET_MANIFEST = {
       "engine": {
         "registry": "0x44e48d810d05919255e6f759e88eaee39fb53047",
         "rewards": "0x69499d7b9E43D5EA9EAc3830Eb40826EB8f18B6A",
-        "cashoutRouter": "0x2cc251a27ed7b0fb9f7b80abf67816a290461012"
+        "cashoutRouter": "0x2cc251a27ed7b0fb9f7b80abf67816a290461012",
+        "bridged": false,
+        "rewardTerms": "none"
       },
       "collateral": [
         {
@@ -505,7 +507,9 @@ export const TESTNET_MANIFEST = {
       "engine": {
         "registry": "0xc9d81629e3bf335d2806e628d731321af06574f4",
         "rewards": "0x25122A43e4226168BF88Dad83e4b498639Cc13A4",
-        "cashoutRouter": "0x972bcbcd2ea2a01621bf47a3c9148b0c918646b1"
+        "cashoutRouter": "0x972bcbcd2ea2a01621bf47a3c9148b0c918646b1",
+        "bridged": false,
+        "rewardTerms": "none"
       },
       "collateral": [
         {
@@ -555,7 +559,9 @@ export const TESTNET_MANIFEST = {
       "intentV1": {
         "core": "0xf30c76e1ba4357a56a2922cab8206347f598a68f",
         "factory": "0x5cc75a7a21f70f40e8fc3068bb4c1aa9c1624576",
-        "exitDesk": "0xd35dcf0d6165106851e39f52363979a9d907d379"
+        "exitDesk": "0xd35dcf0d6165106851e39f52363979a9d907d379",
+        "loopRouter": "0x84d49bec7de08a97cc382bb33ef8a986f25057f9",
+        "rolloverRouter": "0xE52A39F53Fd1f132Ea0D812ADd074ab7A1f4b4e2"
       },
       "intentV1IndexerUrl": "https://retained-r13d-indexer-rehearsal.up.railway.app"
     }
@@ -579,7 +585,9 @@ export const TESTNET_MANIFEST = {
           "engine": {
             "registry": "0x775ccf78b110f3c7e3e235f2563e10e035b7ece1",
             "rewards": "0x0f0ffBB53ed0bbAc3aAA7cE5199eE74B93435cC3",
-            "cashoutRouter": "0x67b0cbeefbae0beceb2e2706fa1697d71acc0899"
+            "cashoutRouter": "0x67b0cbeefbae0beceb2e2706fa1697d71acc0899",
+            "bridged": false,
+            "rewardTerms": "none"
           },
           "collateral": [
             {
@@ -623,7 +631,9 @@ export const TESTNET_MANIFEST = {
           "engine": {
             "registry": "0x10cad33cc2008a457662ab82a41d57ad899e264c",
             "rewards": "0x010F3705B17401666B54c667f8E038D8Ced6aDF8",
-            "cashoutRouter": "0xe3dc9e4da32db6f49b7c24cee04756d3a1d3b97f"
+            "cashoutRouter": "0xe3dc9e4da32db6f49b7c24cee04756d3a1d3b97f",
+            "bridged": false,
+            "rewardTerms": "none"
           },
           "collateral": [
             {
@@ -779,8 +789,21 @@ export const TESTNET_MANIFEST = {
     "startBlock": 144949533,
     "core": "0x4DFF2096e5c5a3f44ba93fC23d8bc3E9c022B60D",
     "registry": "0xaa2Ac18E09c25D74c31932e57b7F067A4d0D193B",
-    "vaultFactory": "0x57fc82589B12F9b3e95390f06E8a979ce566035B",
-    "vaults": [],
+    "vaultFactory": "0xF793A2035854075C02b1720437B9FdCc5A7e3cb7",
+    "retiredVaultFactories": [
+      "0x57fc82589B12F9b3e95390f06E8a979ce566035B"
+    ],
+    "rewardsBridge": "0x75C35fd72E6e563BefDF25705dBCa66A20dD10Dd",
+    "vaults": [
+      {
+        "address": "0x67EF31F4D113522410B8B1B2cbEb07C24414A620",
+        "name": "Drill LP (testnet)"
+      },
+      {
+        "address": "0xfF618EC0C33B41b787412842b5Ca1392FAb81094",
+        "name": "Drill LP (testnet)"
+      }
+    ],
     "adapters": [
       {
         "kind": "uniswap-v3",

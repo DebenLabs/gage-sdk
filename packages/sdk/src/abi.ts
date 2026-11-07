@@ -8,6 +8,7 @@ export const engineAbi = parseAbi([
   // The last id listed: ids run from 1, so a loan past it is not listed yet at the block read.
   "function loanCount() view returns (uint256)",
   "function USDG() view returns (address)",
+  "function GRACE() view returns (uint32)",
   "function ownerOf(uint256 id) view returns (address)",
   "function cashCredit(address) view returns (uint256)",
   "function list(Collateral c, uint128 principal, uint128 cap, uint32 term, uint40 fundingDeadline, bool withRewards) returns (uint256 id)",
@@ -32,8 +33,12 @@ export const registryAbi = parseAbi([
   "function allowedTerms() view returns (uint32[])",
   "function feeBps() view returns (uint16)",
   "function newDealsPaused() view returns (bool)",
+  // What a vault's sale of a running loan may be charged (`IntentLenderMarket.list` holds its listing to it).
+  "function tradeFeeBps() view returns (uint16)",
   // An unbridged core's listing rewards for a six-decimal fee (R2 option C: a stablecoin market posts its terms scaled).
   "function quoteRewards(uint32 term, uint128 fee) view returns (uint128 borrower, uint128 lender)",
+  // Every admission of a token and every change of one: how a token listed after a release is found (src/discovery.ts).
+  "event RouterSet(address indexed router, bool allowed)",
 ]);
 export const rewardsAbi = parseAbi([
   "function claimable(uint256 id, address account) view returns (uint256)",
@@ -63,6 +68,9 @@ export const factoryAbi = parseAbi([
   "function isCreator(address) view returns (bool)",
   "function openCreation() view returns (bool)",
   "function categoryOf(address) view returns (bool classified, uint8 category)",
+  // A vault's name is display text its manager may change (Intent D54).
+  "function nameOf(address vault) view returns (string)",
+  "function setName(address vault, string name)",
   "function create((address curator,uint16[4] categoryWeights,address[] assets,uint32 maxLoanTerm,uint16 feeBps,uint8 minGrade,uint8 minRateGrade,uint128 maxLoanPrincipal,uint16 maxAssetBps,uint16 bufferBps,uint16 executionCapBps) mandate,bool secondaryEnabled,uint16 secondaryExtraBps,string name) returns (address vault)",
   // Mandate 13 (Intent D56): `secondaryOnly`, a vault that buys running loans and funds no new one.
   "function create((address curator,uint16[4] categoryWeights,address[] assets,uint32 maxLoanTerm,uint16 feeBps,uint8 minGrade,uint8 minRateGrade,uint128 maxLoanPrincipal,uint16 maxAssetBps,uint16 bufferBps,uint16 executionCapBps) mandate,bool secondaryEnabled,uint16 secondaryExtraBps,bool secondaryOnly,string name) returns (address vault)",
@@ -131,6 +139,8 @@ export const generationDeployerAbi = parseAbi([
   "function isFactory(address factory) view returns (bool)",
   "function listed(bytes32 id) view returns (bool)",
 ]);
+/** A Stock Token's display multiplier: its amounts on chain are raw, and a wallet or the app shows them times this. */
+export const stockTokenAbi = parseAbi(["function uiMultiplier() view returns (uint256)", "function paused() view returns (bool)"]);
 /** A cash-out router's flash source: a V3 router's `FLASH_POOL()`, a v4 router's (D348) `POOL_MANAGER()`. */
 export const flashSourceAbi = parseAbi(["function FLASH_POOL() view returns (address)", "function POOL_MANAGER() view returns (address)"]);
 /** The factory's share views (`IntentVaultViews`): a vault's open records, the set the desk weighs a holding against. */
@@ -159,6 +169,9 @@ export const exitVaultAbi = parseAbi([
 /** A vault's market (mandate 13, Intent D56): a holding's listing. */
 export const lenderMarketAbi = parseAbi([
   "function asks(uint256 id) view returns (uint40 listedAt, uint40 deadline, uint16 maxFeeBps, uint8 slots, uint64 nonce, bool exit)",
+  // Its curator's calls (mandate 13): a running loan of the vault listed for sale, and taken off again.
+  "function list(uint256 id, uint40 deadline, uint16 maxFeeBps) returns (uint64 nonce)",
+  "function cancel(uint256 id)",
 ]);
 /** The Intent core: where a loan's interest clock stops (`accrualEnd`). */
 export const accrualAbi = parseAbi(["function accrualEnd(uint256 id) view returns (uint256)"]);
@@ -186,6 +199,55 @@ export const partnerVaultAbi = parseAbi([
   "function performingPrincipal() view returns (uint256)",
   // Booking its loans' outcomes, anyone's call: while one is past its end unbooked, deposits and redemptions wait.
   "function settle(uint256[] ids)",
+  // A written-off loan's collateral moved into a pocket for those who bore the write-off, anyone's call: until then no claim on it pays.
+  "function recover(uint256 id)",
+]);
+/**
+ * A partner vault as its curator manages it (contracts/src/intent/IntentVault.sol): who may, where its policy and market
+ * are, what it is set to now, and the calls that change it. The limits move in its asset policy (`assetPolicyAbi`).
+ */
+export const vaultManagerAbi = parseAbi([
+  "function CURATOR() view returns (address)",
+  "function ASSET_POLICY() view returns (address)",
+  "function LENDER_MARKET() view returns (address)",
+  "function MANDATE_VERSION() view returns (uint256)",
+  "function CATEGORY_MASK() view returns (uint8)",
+  "function name() view returns (string)",
+  "function paused() view returns (bool)",
+  "function fillersOpen() view returns (bool)",
+  "function feeRecipient() view returns (address)",
+  "function executionCapBps() view returns (uint16)",
+  "function maxLoanPrincipal() view returns (uint128)",
+  "function maxAssetBps() view returns (uint16)",
+  "function bufferBps() view returns (uint16)",
+  "function minRateGrade() view returns (uint8)",
+  "function categoryWeightBps(uint8 category) view returns (uint16)",
+  "function setPaused(bool enabled)",
+  "function setFillersOpen(bool enabled)",
+  "function setExecutionCap(uint16 bps)",
+  "function setFeeRecipient(address recipient)",
+  "function setAsset(address token, bool picked)",
+  "function resolveAssetAddition(address token, bool activate)",
+]);
+/**
+ * A partner vault's asset policy (contracts/src/intent/IntentAssetPolicy.sol, `ASSET_POLICY()`): its risk limits, whether
+ * it buys running loans and the tokens it lends against. A tightening applies at once, a loosening waits three hours.
+ */
+export const assetPolicyAbi = parseAbi([
+  "function setLimit(uint8 limit, uint128 value)",
+  "function activateLimit(uint8 limit)",
+  "function cancelLimit(uint8 limit)",
+  "function pendingLimit(uint8 limit) view returns (uint128 value, uint64 readyAt)",
+  "function setSecondaryPolicy(bool enabled, uint16 extraBps)",
+  "function activateSecondaryPolicy()",
+  "function cancelSecondaryPolicy()",
+  "function secondaryEnabled() view returns (bool)",
+  "function minExtraAnnualReturnBps() view returns (uint16)",
+  "function pendingExtraBps() view returns (uint16)",
+  "function pendingReadyAt() view returns (uint256)",
+  "function SECONDARY_ONLY() view returns (bool)",
+  "function picked(address token) view returns (bool)",
+  "function readyAt(address token) view returns (uint256)",
 ]);
 /**
  * The loop router (contracts/src/loop/LoopRouter.sol): its three ways to buy the purchase, a hookless v4 pool (`loop`), a
@@ -474,6 +536,30 @@ export const lpVaultAbi = parseAbi([
   "function removePool(address adapter, address pool)",
 ]);
 /**
+ * What a reserve vault adds to `lpVaultAbi` (D454, contracts/src/lp2/): its companion, asked apart from the vault's other
+ * reads, since an LPVault lacks the name and one strict read of it would fail the whole call.
+ */
+export const lpReserveVaultAbi = parseAbi([
+  "function COMPANION() view returns (address)",
+]);
+/**
+ * LPVaultCompanion (D454), one per reserve vault: what its reserve holds and can pay, what its curator set, the sGAGE its
+ * holders share, and a holder's claim of it. A read of it fails on its own, never the vault's read.
+ */
+export const lpCompanionAbi = parseAbi([
+  "function RESERVE() view returns (address)",
+  "function reserveShares() view returns (uint256)",
+  "function reserveValue() view returns (uint256)",
+  "function reservePayable() view returns (bool ok, uint256 assets)",
+  "function freeLiquidity() view returns (uint256 free)",
+  "function bufferBps() view returns (uint16)",
+  "function minCostBpsPerYear() view returns (uint16)",
+  "function reserveClosed() view returns (bool)",
+  "function accountedRewards() view returns (uint256)",
+  "function rewardClaimable(address account) view returns (uint256)",
+  "function claimRewards() returns (uint256 amount)",
+]);
+/**
  * LPVaultFactory (D318): a wallet the registry lets open one (`mayOpenVault`: an allowed curator, or anyone once creation
  * is open, D319) opens an LP vault in one call, curated by it, funding only the pools it names; the factory lists its
  * vaults and the name each was opened with.
@@ -573,4 +659,5 @@ export const partnerVault4626Abi = parseAbi([
   "function deposit(uint256 assets, address receiver) returns (uint256 shares)",
   "function withdraw(uint256 assets, address receiver, address owner) returns (uint256 shares)",
   "function maxWithdraw(address owner) view returns (uint256)",
+  "function maxRedeem(address owner) view returns (uint256)",
 ]);

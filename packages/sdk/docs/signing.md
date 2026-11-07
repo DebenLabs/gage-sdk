@@ -2,7 +2,7 @@
 
 gage never holds a key and never signs. There are two ways to carry an action out: `run()` with a signer your code holds,
 or `prepare()` and any wallet that signs what it is handed. Both plan from the chain and gage's services, approve exact
-amounts only (leaving a loan to roll by itself is the one standing approval, and its plan says so), and simulate each
+amounts only (`auto_roll` and `put_auto_roll` leave the two standing approvals, and their plans say so), and simulate each
 step before it is sent.
 
 [examples/sign-yourself.ts](../examples/sign-yourself.ts) signs each step itself; [examples/spend-limit.ts](../examples/spend-limit.ts)
@@ -31,6 +31,8 @@ A refusal found before any step throws an `ApiError`. Once planned, `run` answer
 | `summary`, `notes` | the plan in words |
 
 `options.onStep(step)` is called as each sent step settles, for progress, and `options.limit` is a spend limit (below).
+Once a transaction has gone out, `run` always answers: what `onStep` throws or rejects with, or a limit's `release`, stops
+nothing, and `notes` say what failed.
 
 `SEND_FAILED`: the signer did not send and the wallet's nonce did not move, so nothing went out. `SEND_UNKNOWN`: the signer
 failed after the wallet sent a transaction, which may be this step's; look up the wallet's latest transaction before
@@ -44,9 +46,9 @@ transaction's hash once the network has it. Any wallet fits.
 - `privateKeySigner(key, { network?, rpcUrl? })` holds a raw key in memory, for mainnet unless `network` is `"testnet"`. A
   malformed key is refused in fixed words, never echoed (`INVALID_KEY`).
 - `viemSigner(walletClient, chain?)` wraps a viem wallet client that carries its account (`NO_ACCOUNT` otherwise): a local
-  account, a server wallet, an embedded wallet. Create the client with `chain: robinhoodMainnet` (exported by the SDK),
-  or pass the chain: a client without one is taken for the testnet, and a mainnet transaction is then refused
-  (`CHAIN_MISMATCH`).
+  account, a server wallet, an embedded wallet. It signs for the client's own chain, or for the chain you pass, and
+  Robinhood Chain where neither names one; another chain's transaction is refused (`CHAIN_MISMATCH`), which `run` answers
+  as itself.
 - An ethers signer in three lines:
   `{ address: await wallet.getAddress(), sendTransaction: async (tx) => (await wallet.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, gasLimit: tx.gas, chainId: tx.chainId })).hash }`.
 
@@ -70,7 +72,9 @@ if (plan.next.final && !plan.again) return { status: "done" as const, sent, summ
 
 `prepare({ action, wallet, … })` answers:
 
-- `status`: `approval_required` (the next transaction is an exact-amount approval), `ready`, or `done`.
+- `status`: `approval_required` (the next transaction is an exact-amount approval), `ready`, `done`, or `partial` (nothing
+  to send from what could be read, but part of it did not answer, so more may be ready: `notes` say what, and prepare again
+  shortly).
 - `next`: `{ label, kind, final, transaction: { from, to, data, value, chainId, gas } }`, simulated now, or `null`. `gas` is
   the simulation's estimate, to which a wallet adds its own headroom; a partner vault's settle, deposit or withdrawal
   already carries a floor for the reward claims it makes.
@@ -107,6 +111,7 @@ Whether an agent signs under a limit is its wallet owner's choice.
 ## Batches
 
 Park and unpark are built as one batch (`parkCalls`, `unparkCalls`, and `prepare`'s `calls`), for EIP-5792
-`wallet_sendCalls`, simulated whole first ([Park and unpark](park.md)). A DEX's pool vaults come as one batch from their
+`wallet_sendCalls`, simulated whole first ([Park and unpark](park.md)). Sent one by one instead, each call's gas limit is
+its own estimate plus its `extraGas`. A DEX's pool vaults come as one batch from their
 curator, or a Safe{Wallet} Transaction Builder file ([Earn](earn.md#pool-vaults-for-a-dex)). `run()` waits on each
 transaction's hash, so a Safe signs through `prepare` or the Transaction Builder, not `run`.
